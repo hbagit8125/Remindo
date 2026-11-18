@@ -1,6 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db, deliveries, reminders } from "@/db";
-import { verifyToken } from "@/lib/auth";
+import { signToken, verifyToken } from "@/lib/auth";
+import { logReminderPayment } from "@/lib/finance";
+import { formatINR } from "@/lib/money";
 import { completeOccurrence, snoozeOccurrence } from "@/lib/scheduler";
 import { esc } from "@/lib/email";
 import { config } from "@/lib/config";
@@ -54,7 +56,20 @@ export async function POST(req: Request) {
 
   if (payload.act === "done") {
     await completeOccurrence(r.id, d.occurrenceAt);
-    return page("Marked as done", `"${r.title}" is done. No more alerts for it${r.rrule ? " this time" : ""}.`);
+    const msg = `"${r.title}" is done. No more alerts for it${r.rrule ? " this time" : ""}.`;
+    if (!r.amountPaise) return page("Marked as done", msg);
+    // Bill reminder: offer to log the payment as an expense.
+    const logToken = await signToken({ did: d.id, act: "log" }, "14d");
+    const form = `<form method="post" action="/api/action?t=${encodeURIComponent(logToken)}">
+<button style="background:#10b981;color:#fff;border:0;border-radius:12px;padding:14px 22px;font-size:16px;font-weight:600;cursor:pointer;margin-bottom:20px">Log ${esc(formatINR(r.amountPaise))} as paid</button></form>`;
+    return page("Marked as done", msg, true, form);
+  }
+
+  if (payload.act === "log") {
+    const res = await logReminderPayment(r.id, d.occurrenceAt);
+    if ("error" in res && res.error) return page("Couldn't log", res.error, false);
+    if (!("transaction" in res) || !res.transaction) return page("Couldn't log", "Something went wrong.", false);
+    return page(res.already ? "Already logged" : "Payment logged", `${formatINR(res.transaction.amountPaise)} for "${r.title}" is in your expenses.`);
   }
 
   let minutes = 0;

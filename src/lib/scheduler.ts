@@ -7,6 +7,8 @@ import { signToken } from "./auth";
 import { config } from "./config";
 import { describeLead } from "./reminder-input";
 import { fmtLocal } from "./time";
+import { paidOccurrences } from "./finance";
+import { formatINR } from "./money";
 
 /** How far ahead alerts are queued. QStash free tier allows up to 7 days of delay. */
 export const PLAN_AHEAD_MS = 48 * 3600 * 1000;
@@ -98,7 +100,8 @@ function headlineFor(d: Delivery, r: Reminder) {
 function whenText(r: Reminder, occ: Date) {
   const time = r.allDay ? fmtLocal(occ, "EEEE, d MMM yyyy") : fmtLocal(occ, "EEEE, d MMM yyyy · h:mm a");
   const rep = describeRrule(r.rrule);
-  return rep ? `${time} · ${rep}` : time;
+  const amt = r.amountPaise ? ` · ${formatINR(r.amountPaise)}` : "";
+  return (rep ? `${time} · ${rep}` : time) + amt;
 }
 
 /**
@@ -264,6 +267,8 @@ export type AgendaItem = {
   recurring: string;
   done: boolean;
   snoozedUntil: string | null;
+  amountPaise: number | null;
+  paid: boolean;
 };
 
 /** Occurrences between two instants, with done/snooze state. */
@@ -283,6 +288,8 @@ export async function agenda(from: Date, to: Date): Promise<AgendaItem[]> {
         recurring: describeRrule(r.rrule),
         done: r.status === "done",
         snoozedUntil: null,
+        amountPaise: r.amountPaise,
+        paid: false,
       });
     }
   }
@@ -300,9 +307,11 @@ export async function agenda(from: Date, to: Date): Promise<AgendaItem[]> {
     .where(and(inArray(deliveries.reminderId, ids), eq(deliveries.kind, "snooze"), eq(deliveries.status, "queued")));
   const snoozeMap = new Map(snoozes.map((s) => [`${s.reminderId}|${s.occurrenceAt.toISOString()}`, s.alertAt.toISOString()]));
 
+  const paid = await paidOccurrences(ids.filter((id) => rows.find((r) => r.id === id)?.amountPaise));
   for (const i of items) {
     const k = `${i.reminderId}|${i.occurrenceAt}`;
     if (doneSet.has(k)) i.done = true;
+    if (paid.has(k)) i.paid = true;
     i.snoozedUntil = snoozeMap.get(k) ?? null;
   }
   return items.sort((a, b) => a.occurrenceAt.localeCompare(b.occurrenceAt));

@@ -1,30 +1,59 @@
 import * as chrono from "chrono-node";
 import { z } from "zod";
 import { reminderInputSchema, type ReminderInput } from "./reminder-input";
+import {
+  CATEGORY_KEYWORDS,
+  DEFAULT_CATEGORIES,
+  INCOME_CATEGORIES,
+  transactionInputSchema,
+  type TransactionInput,
+} from "./money";
 import { fmtLocal, localNowContext, toFakeUtc } from "./time";
 
-const resultSchema = z.object({ items: z.array(reminderInputSchema).max(20) });
+const resultSchema = z.object({
+  reminders: z.array(reminderInputSchema).max(20).default([]),
+  transactions: z.array(transactionInputSchema).max(30).default([]),
+});
+
+export type ParseResult = { reminders: ReminderInput[]; transactions: TransactionInput[] };
 
 function systemPrompt(now = new Date()) {
   const ctx = localNowContext(now);
-  return `You turn a person's short note (typed or spoken) into reminders.
-Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "next Tuesday", "in 2 hours", "on the 5th") against this. Never pick a date/time in the past: if a time today has already passed and no date was given, use tomorrow.
+  return `You are a personal assistant. You turn a short note (typed or spoken, Indian English, amounts in rupees) into REMINDERS and/or money TRANSACTIONS.
+Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.
 
-Return ONLY JSON: {"items":[ ... ]}. One item per distinct reminder. Each item:
+Return ONLY JSON: {"reminders":[...], "transactions":[...]}. Either list may be empty.
+
+TRANSACTIONS = money that already moved: "spent", "paid", "bought", "got", "received", "credited", or a plain "<thing> <amount>" like "petrol 1200".
+Each transaction:
 {
-  "title": short imperative title, e.g. "Pay rent", "Call Mom", "Dentist appointment",
+  "type": "expense" | "income" (salary, credited, received, refund = income),
+  "amount": number in rupees ("1.2k" = 1200, "2 lakh" = 200000),
+  "category": for expenses one of ${DEFAULT_CATEGORIES.join(", ")}; for income one of ${INCOME_CATEGORIES.join(", ")},
+  "note": short description like "Lunch" or "Petrol", or null,
+  "merchant": shop/app name if said (Zomato, Amazon, Uber), else null,
+  "method": "upi" | "card" | "cash" | "bank" if said (GPay/PhonePe/Paytm = upi), else null,
+  "date": "YYYY-MM-DD", today unless they say otherwise. Never in the future.
+}
+
+REMINDERS = things to do or remember in the future. Never pick a date/time in the past: if a time today has already passed and no date was given, use tomorrow.
+Each reminder:
+{
+  "title": short imperative title, e.g. "Pay rent", "Call Mom",
   "notes": extra details or null,
   "date": "YYYY-MM-DD" (first occurrence),
-  "time": "HH:mm" 24h, or null if no time of day applies (birthdays, bills, deadlines without time),
+  "time": "HH:mm" 24h, or null if no time of day applies (birthdays, bills, deadlines),
   "recurrence": "none" | "daily" | "weekly" | "monthly" | "yearly",
-  "interval": integer, 1 unless they say "every 2 weeks" etc,
+  "interval": integer, 1 unless "every 2 weeks" etc,
   "weekdays": for weekly only, e.g. ["MO","WE","FR"], else null,
   "until": "YYYY-MM-DD" or null,
-  "priority": "high" for birthdays, anniversaries, bills, payments, deadlines, exams, appointments, renewals, anything with money or a penalty; "low" for trivial nice-to-dos; otherwise "normal",
+  "priority": "high" for birthdays, anniversaries, bills, payments, deadlines, exams, appointments, renewals; "low" for trivial nice-to-dos; else "normal",
   "category": one short word like "work","personal","health","finance","family","study", or null,
-  "leadTimes": minutes before to alert, e.g. "remind me 2 days early" -> [2880, 0]; "30 min before" -> [30, 0]; null if not mentioned
+  "amount": rupees if it is a bill/payment to make (rent, EMI, subscription), else null,
+  "leadTimes": minutes before to alert, e.g. "remind me 2 days early" -> [2880, 0]; null if not mentioned
 }
-Birthdays and anniversaries are yearly. "Every weekday" is weekly with MO-FR.`;
+
+Rules: "Paid rent 15000, remind me next month" = one transaction AND one monthly reminder with amount. "Netflix 649 every month on the 12th" = a monthly reminder with amount 649 (not a transaction unless they say they paid). Birthdays are yearly. "Every weekday" = weekly MO-FR.`;
 }
 
 function extractJson(text: string) {
@@ -74,8 +103,69 @@ async function withGroq(text: string): Promise<unknown> {
   return extractJson(json?.choices?.[0]?.message?.content || "");
 }
 
+const AMOUNT_RE = /(?:₹|rs\.?|inr)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|lakh|lakhs|l)?\b(?!\s*(?:am|pm|th|st|nd|rd|min|hour|day|week|month))/i;
+const MONEY_MOVED_RE = /\b(spent|spend|paid|pay(?:ed)?|bought|cost|got|received|credited|salary|refund)\b/i;
+
+/** No-AI fallback for money: "spent 450 on lunch", "petrol 1200 yesterday". */
+export function parseTransactionLocally(text: string, now = new Date()): TransactionInput | null {
+  const lower = text.toLowerCase();
+  const futureish = /\b(remind|every|tomorrow|next|on the \d)/i.test(lower);
+  if (futureish && !MONEY_MOVED_RE.test(lower)) return null;
+  const m = text.match(AMOUNT_RE);
+  if (!m) return null;
+  let amount = Number(m[1].replace(/,/g, ""));
+  const unit = (m[2] || "").toLowerCase();
+  if (unit === "k") amount *= 1000;
+  if (unit.startsWith("l")) amount *= 100000;
+  if (!amount) return null;
+
+  const income = /\b(salary|received|credited|refund|got paid)\b/i.test(lower);
+  let category = "Other";
+  for (const [re, cat] of CATEGORY_KEYWORDS) {
+    if (re.test(lower)) {
+      category = cat;
+      break;
+    }
+  }
+  if (income && !(INCOME_CATEGORIES as readonly string[]).includes(category)) category = /salary/i.test(lower) ? "Salary" : "Other";
+  if (!income && category === "Salary") category = "Other";
+
+  let date = fmtLocal(now, "yyyy-MM-dd");
+  if (/\byesterday\b/i.test(lower)) date = fmtLocal(new Date(now.getTime() - 86400000), "yyyy-MM-dd");
+  const method = /\b(upi|gpay|phonepe|paytm)\b/i.test(lower)
+    ? "upi"
+    : /\bcard\b/i.test(lower)
+      ? "card"
+      : /\bcash\b/i.test(lower)
+        ? "cash"
+        : null;
+
+  const note = text
+    .replace(m[0], " ")
+    .replace(/\b(spent|spend|paid|pay|bought|for|on|at|in|via|by|using|yesterday|today|upi|gpay|phonepe|paytm|card|cash|rs\.?|rupees|inr|received|credited|got)\b/gi, " ")
+    .replace(/₹/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[,.\-\s]+|[,.\-\s]+$/g, "");
+
+  return transactionInputSchema.parse({
+    type: income ? "income" : "expense",
+    amount,
+    category,
+    note: note ? note[0].toUpperCase() + note.slice(1) : null,
+    method,
+    date,
+  });
+}
+
 /** No-AI fallback: chrono-node for the date, keywords for repetition and priority. */
-export function parseLocally(text: string, now = new Date()): ReminderInput[] {
+export function parseLocally(text: string, now = new Date()): ParseResult {
+  const tx = parseTransactionLocally(text, now);
+  if (tx) return { reminders: [], transactions: [tx] };
+  return { reminders: parseReminderLocally(text, now), transactions: [] };
+}
+
+function parseReminderLocally(text: string, now: Date): ReminderInput[] {
   const offsetMin = Math.round((toFakeUtc(now).getTime() - now.getTime()) / 60000);
   const results = chrono.parse(text, { instant: now, timezone: offsetMin }, { forwardDate: true });
   const r = results[0];
@@ -133,7 +223,7 @@ export function parseLocally(text: string, now = new Date()): ReminderInput[] {
   ];
 }
 
-export async function parsePrompt(text: string): Promise<{ items: ReminderInput[]; engine: string; warning?: string }> {
+export async function parsePrompt(text: string): Promise<ParseResult & { engine: string; warning?: string }> {
   const errors: string[] = [];
   for (const [engine, fn] of [
     ["gemini", withGemini],
@@ -142,16 +232,17 @@ export async function parsePrompt(text: string): Promise<{ items: ReminderInput[
     try {
       const raw = await fn(text);
       const parsed = resultSchema.safeParse(raw);
-      if (parsed.success && parsed.data.items.length) return { items: parsed.data.items, engine };
-      errors.push(`${engine}: ${parsed.success ? "no items" : parsed.error.issues[0]?.message}`);
+      if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length)) {
+        return { ...parsed.data, engine };
+      }
+      errors.push(`${engine}: ${parsed.success ? "nothing found" : parsed.error.issues[0]?.message}`);
     } catch (e) {
       errors.push((e as Error).message);
     }
   }
   return {
-    items: parseLocally(text),
+    ...parseLocally(text),
     engine: "local",
-    warning: `AI unavailable, used simple parser. Check the details. (${errors.join("; ").slice(0, 200)})`,
+    warning: `AI unavailable, used the simple parser. Check the details. (${errors.join("; ").slice(0, 200)})`,
   };
 }
-

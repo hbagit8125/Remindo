@@ -1,5 +1,8 @@
 # ⏰ Remindo
 
+**Reminders + expenses in one place.** Say *"Spent 450 on lunch"*, *"Salary credited 85000"* or
+*"Pay rent on the 5th every month"* and Remindo files it in the right place.
+
 A personal reminder assistant you run for free on Vercel. Type or say things like
 *"Pay rent on the 5th every month, remind me 2 days early"* and it schedules them,
 emails you at the right time, and keeps nagging about important ones until you
@@ -15,6 +18,19 @@ mark them done.
 - **Morning digest** around 7am IST (overdue, today, important this week) and a **Sunday-evening week preview**.
 - **Dashboard** with Today, Upcoming, Important and All tabs, an overdue banner, and edit, snooze and undo. It's installable on your phone as an app.
 - **Passcode-locked** single-user app.
+
+## Money tracking
+
+- **Same input for money:** type, speak or fill the form. The AI decides whether it's an expense, income, a reminder, or several of them.
+- **Payment method** (UPI / Card / Cash / Bank) and **categories**, including your own.
+- **Bills link to expenses:** give a reminder an amount. When you mark it done, one tap logs the payment.
+- **Monthly budgets**, overall and per category, with an email at 80% and 100%.
+- **Insights:** month total vs last month, category donut, day-by-day chart, money left after income.
+- **Spending in emails:** yesterday and month-to-date in the morning digest, the last 7 days in the Sunday preview.
+- **CSV export** of everything.
+
+### Upgrading an existing install
+Run `drizzle/0001_expenses.sql` once in the Neon SQL Editor. It only **adds** tables and a column, so existing reminders are untouched.
 
 ## How delivery works (and why nothing gets missed)
 
@@ -41,6 +57,7 @@ Next.js 16 · TypeScript · Tailwind v4 · Drizzle ORM · Neon Postgres · Upsta
 ### 1. Database: Neon
 1. Sign up at **neon.tech** and create a project (pick the Singapore region for India).
 2. Copy the connection string into `DATABASE_URL`.
+3. In Neon's **SQL Editor**, run `drizzle/0000_init.sql`, then `drizzle/0001_expenses.sql`. Alternatively, use `npm run db:push` as below.
 3. Create the tables (once, from your machine):
    ```bash
    npm install

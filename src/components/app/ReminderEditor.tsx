@@ -1,11 +1,12 @@
 "use client";
 
 import { clsx } from "clsx";
-import { LEAD_OPTIONS, WEEKDAY_LIST, type ReminderInput } from "./types";
+import { LEAD_OPTIONS, WEEKDAY_LIST, type ReminderInput } from "../types";
 
-const field =
-  "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400";
-const label = "mb-1 block text-xs font-medium text-zinc-400";
+export const field =
+  "w-full rounded-xl border border-line bg-raised px-3 py-2.5 text-[15px] text-fg outline-none placeholder:text-subtle focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20";
+export const label = "mb-1.5 block text-xs font-medium text-muted";
+const chipOff = "border-line text-muted hover:bg-raised";
 
 const DEFAULT_LEADS = { high: [10080, 1440, 0], normal: [0], low: [0] };
 
@@ -61,14 +62,14 @@ export function ReminderEditor({ value, onChange }: { value: ReminderInput; onCh
                 type="button"
                 onClick={() => onChange({ ...value, priority: p, leadTimes: null })}
                 className={clsx(
-                  "flex-1 rounded-lg border px-2 py-2 text-xs font-medium capitalize transition",
+                  "flex-1 rounded-xl border px-2 py-2.5 text-xs font-medium capitalize transition",
                   value.priority === p
                     ? p === "high"
-                      ? "border-rose-400 bg-rose-500/20 text-rose-200"
+                      ? "border-rose-400 bg-rose-500/15 text-rose-600 dark:text-rose-200"
                       : p === "normal"
-                        ? "border-indigo-400 bg-indigo-500/20 text-indigo-200"
-                        : "border-zinc-400 bg-zinc-500/20 text-zinc-200"
-                    : "border-white/10 text-zinc-400 hover:bg-white/5",
+                        ? "border-indigo-400 bg-indigo-500/15 text-indigo-600 dark:text-indigo-200"
+                        : "border-zinc-400 bg-zinc-500/15 text-zinc-600 dark:text-zinc-200"
+                    : chipOff,
                 )}
               >
                 {p}
@@ -111,8 +112,8 @@ export function ReminderEditor({ value, onChange }: { value: ReminderInput; onCh
                       set("weekdays", on ? (value.weekdays || []).filter((x) => x !== d) : [...(value.weekdays || []), d])
                     }
                     className={clsx(
-                      "h-8 w-10 rounded-lg border text-xs font-medium",
-                      on ? "border-indigo-400 bg-indigo-500/20 text-indigo-200" : "border-white/10 text-zinc-400",
+                      "h-9 w-11 rounded-lg border text-xs font-medium",
+                      on ? "border-indigo-400 bg-indigo-500/15 text-indigo-600 dark:text-indigo-200" : chipOff,
                     )}
                   >
                     {d}
@@ -138,8 +139,8 @@ export function ReminderEditor({ value, onChange }: { value: ReminderInput; onCh
                   set("leadTimes", next.length ? next.sort((a, b) => b - a) : [0]);
                 }}
                 className={clsx(
-                  "rounded-full border px-3 py-1 text-xs",
-                  on ? "border-emerald-400 bg-emerald-500/15 text-emerald-200" : "border-white/10 text-zinc-400",
+                  "rounded-full border px-3 py-1.5 text-xs",
+                  on ? "border-emerald-400 bg-emerald-500/15 text-emerald-700 dark:text-emerald-200" : chipOff,
                 )}
               >
                 {o.label}
@@ -149,10 +150,20 @@ export function ReminderEditor({ value, onChange }: { value: ReminderInput; onCh
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        <div className="col-span-2">
-          <label className={label}>Notes</label>
-          <input className={field} value={value.notes || ""} onChange={(e) => set("notes", e.target.value || null)} />
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={label}>Bill amount (optional)</label>
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">₹</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              placeholder="e.g. 15000"
+              className={clsx(field, "pl-7")}
+              value={value.amount ?? ""}
+              onChange={(e) => set("amount", e.target.value ? Number(e.target.value) : null)}
+            />
+          </div>
         </div>
         <div>
           <label className={label}>Category</label>
@@ -162,6 +173,10 @@ export function ReminderEditor({ value, onChange }: { value: ReminderInput; onCh
             onChange={(e) => set("category", e.target.value || null)}
           />
         </div>
+      </div>
+      <div>
+        <label className={label}>Notes</label>
+        <input className={field} value={value.notes || ""} onChange={(e) => set("notes", e.target.value || null)} />
       </div>
     </div>
   );

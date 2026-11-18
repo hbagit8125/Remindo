@@ -27,14 +27,14 @@ export default function LoginPage() {
 
   return (
     <main className="min-h-screen grid place-items-center px-4">
-      <form onSubmit={submit} className="glass w-full max-w-sm rounded-3xl p-8 shadow-2xl">
+      <form onSubmit={submit} className="card w-full max-w-sm rounded-3xl p-8 shadow-2xl">
         <div className="mb-6 flex items-center gap-3">
           <div className="grid h-11 w-11 place-items-center rounded-2xl bg-gradient-to-br from-indigo-500 to-pink-500">
             <AlarmClock className="h-6 w-6 text-white" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-white">Remindo</h1>
-            <p className="text-sm text-zinc-400">Enter your passcode</p>
+            <h1 className="text-lg font-semibold">Remindo</h1>
+            <p className="text-sm text-muted">Enter your passcode</p>
           </div>
         </div>
         <input
@@ -43,12 +43,12 @@ export default function LoginPage() {
           value={passcode}
           onChange={(e) => setPasscode(e.target.value)}
           placeholder="Passcode"
-          className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-zinc-500 focus:border-indigo-400"
+          className="w-full rounded-xl border border-line bg-raised px-4 py-3 text-fg outline-none placeholder:text-subtle focus:border-indigo-400"
         />
-        {error && <p className="mt-3 text-sm text-rose-400">{error}</p>}
+        {error && <p className="mt-3 text-sm text-rose-500">{error}</p>}
         <button
           disabled={loading || !passcode}
-          className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-white py-3 font-semibold text-zinc-900 transition hover:bg-zinc-200 disabled:opacity-50"
+          className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-fg py-3 font-semibold text-[var(--bg)] transition hover:opacity-90 disabled:opacity-50"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Unlock <ArrowRight className="h-4 w-4" /></>}
         </button>

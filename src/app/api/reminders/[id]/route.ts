@@ -6,6 +6,13 @@ import { cancelQueued, planAndQueue } from "@/lib/scheduler";
 
 type Ctx = { params: Promise<{ id: string }> };
 
+export async function GET(_req: Request, { params }: Ctx) {
+  const { id } = await params;
+  const [r] = await db().select().from(reminders).where(eq(reminders.id, id));
+  if (!r) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json({ reminder: r });
+}
+
 /** Edit a reminder: body is a ReminderInput. Old queued alerts are dropped and re-planned. */
 export async function PATCH(req: Request, { params }: Ctx) {
   const { id } = await params;

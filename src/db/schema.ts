@@ -23,6 +23,8 @@ export const reminders = pgTable(
     /** RRULE body without DTSTART, e.g. "FREQ=YEARLY;INTERVAL=1". */
     rrule: text("rrule"),
     priority: text("priority").notNull().default("normal"), // low | normal | high
+    /** Optional bill amount in paise (rent, EMI, subscriptions). Lets "Done" log it as an expense. */
+    amountPaise: integer("amount_paise"),
     category: text("category"),
     /** Minutes before each occurrence to send an alert. 0 = at the time. */
     leadTimes: integer("lead_times").array().notNull().default([0]),
@@ -78,5 +80,52 @@ export const completions = pgTable(
   (t) => [uniqueIndex("completions_occ_idx").on(t.reminderId, t.occurrenceAt)],
 );
 
+/** Money in or out. Amounts are stored in paise to avoid rounding errors. */
+export const transactions = pgTable(
+  "transactions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    type: text("type").notNull().default("expense"), // expense | income
+    amountPaise: integer("amount_paise").notNull(),
+    category: text("category").notNull().default("Other"),
+    note: text("note"),
+    merchant: text("merchant"),
+    method: text("method"), // upi | card | cash | bank
+    /** Local calendar date, YYYY-MM-DD. */
+    date: text("date").notNull(),
+    /** Set when logged from a bill reminder. */
+    reminderId: uuid("reminder_id").references(() => reminders.id, { onDelete: "set null" }),
+    occurrenceAt: timestamp("occurrence_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("transactions_date_idx").on(t.date), index("transactions_reminder_idx").on(t.reminderId, t.occurrenceAt)],
+);
+
+/** Monthly budgets. category "__total__" is the overall limit. */
+export const budgets = pgTable(
+  "budgets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    category: text("category").notNull(),
+    amountPaise: integer("amount_paise").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("budgets_category_idx").on(t.category)],
+);
+
+/** Remembers which budget alerts were already emailed (one per month/category/threshold). */
+export const budgetAlerts = pgTable(
+  "budget_alerts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    month: text("month").notNull(),
+    category: text("category").notNull(),
+    threshold: integer("threshold").notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("budget_alerts_idx").on(t.month, t.category, t.threshold)],
+);
+
 export type Reminder = typeof reminders.$inferSelect;
+export type Transaction = typeof transactions.$inferSelect;
 export type Delivery = typeof deliveries.$inferSelect;
