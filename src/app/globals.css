@@ -1,36 +1,101 @@
 @import "tailwindcss";
 
-@theme {
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
 }
 
 :root {
+  --bg: #f6f6fb;
+  --surface: #ffffff;
+  --raised: #f1f1f7;
+  --line: rgba(15, 23, 42, 0.08);
+  --fg: #0f172a;
+  --muted: #64748b;
+  --subtle: #94a3b8;
+  --glow-a: rgba(99, 102, 241, 0.10);
+  --glow-b: rgba(236, 72, 153, 0.06);
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #0b0b12;
+  --surface: rgba(255, 255, 255, 0.04);
+  --raised: rgba(255, 255, 255, 0.07);
+  --line: rgba(255, 255, 255, 0.08);
+  --fg: #f1f5f9;
+  --muted: #a1a1aa;
+  --subtle: #71717a;
+  --glow-a: rgba(99, 102, 241, 0.18);
+  --glow-b: rgba(236, 72, 153, 0.10);
   color-scheme: dark;
 }
 
 body {
   background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(99, 102, 241, 0.18), transparent 60%),
-    radial-gradient(900px 500px at 110% 10%, rgba(236, 72, 153, 0.10), transparent 60%),
-    #0b0b12;
+    radial-gradient(1200px 600px at 10% -10%, var(--glow-a), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, var(--glow-b), transparent 60%),
+    var(--bg);
   background-attachment: fixed;
-  color: #e5e7eb;
+  color: var(--fg);
   font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
 }
 
-.glass {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
   backdrop-filter: blur(12px);
+}
+:root:not(.dark) .card {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 16px rgba(15, 23, 42, 0.04);
 }
 
 input[type="date"]::-webkit-calendar-picker-indicator,
-input[type="time"]::-webkit-calendar-picker-indicator {
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator {
+  opacity: 0.6;
+}
+.dark input[type="date"]::-webkit-calendar-picker-indicator,
+.dark input[type="time"]::-webkit-calendar-picker-indicator {
   filter: invert(0.8);
 }
+
+/* hide number spinners */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
 
 @keyframes pulse-ring {
   0% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.5); }
   100% { box-shadow: 0 0 0 14px rgba(244, 63, 94, 0); }
 }
 .listening { animation: pulse-ring 1.2s ease-out infinite; }
+
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+.animate-sheet { animation: sheet-up .25s cubic-bezier(.2,.8,.2,1); }
+.animate-fade { animation: fade-in .2s ease-out; }
+.animate-pop { animation: pop-in .2s ease-out; }
+
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+.skeleton { position: relative; overflow: hidden; background: var(--raised); }
+.skeleton::after {
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.08), transparent);
+  animation: shimmer 1.4s infinite;
+}
+
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }

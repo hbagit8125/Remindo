@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { connection, NextResponse } from "next/server";
 import { desc, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db, reminders } from "@/db";
@@ -7,6 +7,7 @@ import { planAndQueue } from "@/lib/scheduler";
 import { describeRrule } from "@/lib/recurrence";
 
 export async function GET() {
+  await connection(); // always read fresh data, never prerender
   const rows = await db().select().from(reminders).where(ne(reminders.status, "archived")).orderBy(desc(reminders.createdAt));
   return NextResponse.json({
     reminders: rows.map((r) => ({ ...r, recurring: describeRrule(r.rrule) })),

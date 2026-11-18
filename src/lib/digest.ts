@@ -1,6 +1,7 @@
 import { agenda, type AgendaItem } from "./scheduler";
 import { digestSection, layout, sendEmail, type DigestItem } from "./email";
 import { fmtLocal, localDayBounds } from "./time";
+import { digestSpending, weeklySpending } from "./finance";
 
 const when = (i: AgendaItem, withDay: boolean) => {
   const d = new Date(i.occurrenceAt);
@@ -26,7 +27,8 @@ export async function sendDailyDigest(now = new Date()) {
   const body =
     digestSection("Overdue", overdue.map(toItem(true))) +
     digestSection(`Today · ${fmtLocal(now, "EEEE d MMM")}`, todays.map(toItem(false)), "Nothing scheduled. Enjoy the day!") +
-    digestSection("Important this week", important.map(toItem(true)));
+    digestSection("Important this week", important.map(toItem(true))) +
+    (await digestSpending(now).catch(() => ""));
 
   const count = todays.length;
   const subject = `☀️ Today: ${count} reminder${count === 1 ? "" : "s"}${overdue.length ? ` · ${overdue.length} overdue` : ""}${important.length ? ` · ${important.length} important ahead` : ""}`;
@@ -44,6 +46,7 @@ export async function sendWeeklyPreview(now = new Date()) {
     const dayItems = items.filter((i) => new Date(i.occurrenceAt) >= s && new Date(i.occurrenceAt) < e);
     body += digestSection(fmtLocal(s, "EEEE d MMM"), dayItems.map(toItem(false)), "Free");
   }
+  body += await weeklySpending(now).catch(() => "");
   const high = items.filter((i) => i.priority === "high").length;
   await sendEmail(
     `🗓️ Week ahead: ${items.length} reminder${items.length === 1 ? "" : "s"}${high ? ` · ${high} important` : ""}`,

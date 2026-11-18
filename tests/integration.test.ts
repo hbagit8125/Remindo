@@ -29,7 +29,8 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const stmt of readFileSync("drizzle/0000_init.sql", "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql"])
+    for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
 
@@ -117,6 +118,53 @@ async function main() {
   const token = decodeURIComponent(sent[1].html.match(/t=([^"&]+)/)![1]);
   const p = await verifyToken<{ did: string; act: string }>(token);
   assert.equal(p?.act, "done");
+
+  // 8. Expenses: budgets, alerts, bill → expense, digest spending.
+  const F = await import("../src/lib/finance");
+  const { transactions, budgetAlerts } = await import("../src/db");
+  const { TOTAL_BUDGET } = await import("../src/lib/money");
+  const todayStr = local(0).date;
+  const month = todayStr.slice(0, 7);
+  await F.setBudgets({ [TOTAL_BUDGET]: 1000, Food: 300 });
+  await db().insert(transactions).values([
+    F.inputToTxRow({ type: "expense", amount: 250, category: "Food", date: todayStr }),
+    F.inputToTxRow({ type: "income", amount: 50000, category: "Salary", date: todayStr }),
+  ]);
+  const before = sent.length;
+  await F.checkBudgetAlerts([month]);
+  assert.equal(sent.length, before + 1, "Food 83% -> one 80% alert");
+  assert.match(sent.at(-1)!.subject, /Food budget/);
+  await F.checkBudgetAlerts([month]);
+  assert.equal(sent.length, before + 1, "alert not repeated");
+  await db().insert(transactions).values(F.inputToTxRow({ type: "expense", amount: 800, category: "Rent", date: todayStr }));
+  await F.checkBudgetAlerts([month]);
+  const alerts = await db().select().from(budgetAlerts);
+  assert.ok(alerts.find((a) => a.category === TOTAL_BUDGET && a.threshold === 100), "total over budget alert");
+
+  const ins = await F.insights(month);
+  assert.equal(ins.spent, 105000);
+  assert.equal(ins.income, 5000000);
+  assert.equal(ins.byCategory[0].category, "Rent");
+
+  // Bill reminder with amount -> log payment once.
+  const [bill] = await db().insert(reminders).values(inputToRow({ title: "Pay rent", ...local(60), recurrence: "monthly", interval: 1, priority: "high", amount: 15000 })).returning();
+  assert.equal(bill.amountPaise, 1500000);
+  const occ = bill.dueAt;
+  const l1 = await F.logReminderPayment(bill.id, occ);
+  const l2 = await F.logReminderPayment(bill.id, occ);
+  assert.ok("transaction" in l1 && !l1.already && l1.transaction?.category === "Rent");
+  assert.ok("already" in l2 && l2.already, "no double logging");
+  const ag2 = await S.agenda(new Date(occ.getTime() - 1000), new Date(occ.getTime() + 1000));
+  assert.ok(ag2.find((x) => x.reminderId === bill.id)?.paid, "agenda shows paid");
+
+  await sendDailyDigest(new Date());
+  assert.match(sent.at(-1)!.html, /This month/);
+  assert.match(F.toCsv(await F.listAllTransactions()), /Date,Type,Amount/);
+
+  // Parser: money vs reminders offline.
+  const { parseLocally } = await import("../src/lib/parse");
+  assert.equal(parseLocally("Spent 450 on lunch").transactions[0].category, "Food");
+  assert.equal(parseLocally("Call mom tomorrow at 7pm").reminders.length, 1);
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

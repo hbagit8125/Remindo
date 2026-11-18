@@ -25,6 +25,8 @@ export const reminderInputSchema = z.object({
     .nullish(),
   priority: z.enum(["low", "normal", "high"]).default("normal"),
   category: z.string().trim().max(50).nullish(),
+  /** Bill amount in rupees, if this reminder is for a payment. */
+  amount: z.coerce.number().positive().max(100_000_000).nullish(),
   /** Minutes before the time to alert. null/undefined = defaults for the priority. */
   leadTimes: z.array(z.coerce.number().int().min(0).max(60 * 24 * 60)).nullish(),
 });
@@ -53,6 +55,7 @@ export function inputToRow(i: ReminderInput) {
     rrule: buildRrule(i),
     priority: i.priority,
     category: i.category || null,
+    amountPaise: i.amount ? Math.round(i.amount * 100) : null,
     leadTimes,
     input: i,
   };
