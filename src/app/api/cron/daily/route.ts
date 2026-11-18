@@ -1,0 +1,15 @@
+import { NextResponse } from "next/server";
+import { isCronAuthorized } from "@/lib/auth";
+import { planAndQueue } from "@/lib/scheduler";
+import { sendDailyDigest } from "@/lib/digest";
+
+/**
+ * Runs once a day (Vercel cron, ~7am IST). Queues every alert for the next
+ * 48 hours in QStash, then sends the morning digest.
+ */
+export async function GET(req: Request) {
+  if (!isCronAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const plan = await planAndQueue();
+  const digest = await sendDailyDigest().catch((e) => ({ error: (e as Error).message }));
+  return NextResponse.json({ plan, digest });
+}
