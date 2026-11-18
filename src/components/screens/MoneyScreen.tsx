@@ -13,7 +13,7 @@ import { BudgetBar } from "./HomeScreen";
 export function MonthSwitcher({ month, setMonth, now }: { month: string; setMonth: (m: string) => void; now: Date }) {
   const isCurrent = month === monthKey(now);
   return (
-    <div className="flex items-center gap-1 rounded-xl border border-line p-0.5">
+    <div className="inline-flex items-center gap-1 rounded-xl border border-line p-0.5">
       <button onClick={() => setMonth(shiftMonth(month, -1))} aria-label="Previous month" className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-raised hover:text-fg">
         <ChevronLeft className="h-4 w-4" />
       </button>
