@@ -6,6 +6,7 @@ import { getTelegram, setSetting } from "@/lib/settings";
 import { answerCallback, downloadFile, editTelegram, h, sendTelegram, webhookSecret } from "@/lib/telegram";
 import { parsePrompt, scanReceipt, transcribeAudio, type ParseResult } from "@/lib/parse";
 import { createDues } from "@/lib/moneyplus";
+import { answerQuestion, executeCommand, resolveCommand, type Candidate, type Command } from "@/lib/assistant";
 import { createReminders, createTransactions } from "@/lib/create";
 import { createTasks, focusFrom, listTasks } from "@/lib/tasks";
 import { ACTIONS, performAction, type ActionName } from "@/lib/actions";
@@ -38,6 +39,8 @@ const HELP = `<b>What I can do</b>
 • Send a <b>voice note</b> (English or Malayalam) and I'll do the same
 • Send a <b>photo of a bill</b> or a UPI screenshot, or <b>forward a bank SMS</b>, to log the expense
 • Tap the buttons on reminders to mark them done or snooze
+• Ask: <i>"How much did I spend on food this month?"</i>, <i>"When is Ammu's birthday?"</i>
+• Change things: <i>"Move the dentist to Friday 5pm"</i>, <i>"Mark rent as paid"</i>
 • /today: today's focus tasks and reminders
 • /help: this message`;
 
@@ -115,6 +118,31 @@ async function onMessage(m: TgMessage) {
   if (!input) return sendTelegram(`I can read text and voice notes.\n\n${HELP}`);
 
   const parsed = await parsePrompt(input);
+
+  // Questions are answered straight away, from your data.
+  if (parsed.question) {
+    const a = await answerQuestion(parsed.question);
+    return sendTelegram([`💬 ${h(a.text)}`, ...(a.lines || []).map((l) => `• ${h(l)}`)].join("\n"));
+  }
+  // Changes to existing things: offer buttons to confirm.
+  if (parsed.commands?.length) {
+    const rows: { c: Command; cand: Candidate }[] = [];
+    for (const c of parsed.commands) for (const cand of (await resolveCommand(c)).slice(0, 2)) rows.push({ c, cand });
+    if (!rows.length) return sendTelegram("I couldn't find a reminder or task matching that.");
+    const payload = {
+      exec: rows.map(({ c, cand }) => ({ action: c.action, kind: cand.kind, id: cand.id, occurrenceAt: cand.occurrenceAt, date: c.date, time: c.time, minutes: c.minutes })),
+    };
+    const [d] = await db().insert(telegramDrafts).values({ payload }).returning();
+    return sendTelegram(
+      ["<b>Confirm:</b>", ...rows.map((r, i) => `${i + 1}. ${h(r.cand.description)}`)].join("\n"),
+      [
+        rows.map((_, i) => ({ text: rows.length === 1 ? "✅ Do it" : `✅ ${i + 1}`, callback_data: `x:${d.id}:${i}` })),
+        ...(rows.length > 1 ? [[{ text: "✅ All", callback_data: `x:${d.id}:all` }]] : []),
+        [{ text: "✖ Cancel", callback_data: `c:${d.id}` }],
+      ],
+    );
+  }
+
   if (!parsed.reminders.length && !parsed.transactions.length && !parsed.tasks.length && !parsed.dues?.length) {
     return sendTelegram("I couldn't find a reminder or expense in that. Try: <i>Spent 150 on lunch</i> or <i>Pay rent on the 5th every month</i>");
   }
@@ -146,6 +174,22 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
     const icon = a === "done" ? "✅" : a === "log" ? "💸" : "⏰";
     const keyboard = res.canLog ? [[{ text: `Log ${formatINR(res.canLog)} as paid`, callback_data: `a:log:${b}` }]] : undefined;
     return editTelegram(chatId, msg.message_id, `${base}\n\n${icon} <b>${h(res.title)}</b>. ${h(res.message)}`, keyboard);
+  }
+
+  // Confirm a command: x:<draftId>:<index|all>
+  if (kind === "x" && a) {
+    const [draft] = await db().select().from(telegramDrafts).where(eq(telegramDrafts.id, a));
+    if (!draft) {
+      await answerCallback(q.id, "Already handled");
+      return editTelegram(chatId, msg.message_id, h(msg.text || ""));
+    }
+    await db().delete(telegramDrafts).where(eq(telegramDrafts.id, a));
+    const exec = (draft.payload as { exec: Parameters<typeof executeCommand>[0][] }).exec;
+    const chosen = b === "all" ? exec : [exec[Number(b)]].filter(Boolean);
+    const results = [];
+    for (const e of chosen) results.push(await executeCommand(e));
+    await answerCallback(q.id, "Done");
+    return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ ${h(results.join(" · "))}`);
   }
 
   // Draft buttons: s:<draftId> (save) / c:<draftId> (cancel)

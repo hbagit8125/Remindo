@@ -342,7 +342,7 @@ async function main() {
   // 12. Phase 3: accounts, transfers, favourites, dues, goals, year, monthly report, SMS.
   const MP = await import("../src/lib/moneyplus");
   const { accounts } = await import("../src/db");
-  const { createTransactions } = await import("../src/lib/create");
+  const { createTransactions, createReminders } = await import("../src/lib/create");
   const [sbi] = await db().insert(accounts).values({ name: "SBI", kind: "bank", openingBalancePaise: 1000000 }).returning();
   const [cash] = await db().insert(accounts).values({ name: "Cash", kind: "cash", openingBalancePaise: 50000 }).returning();
   await createTransactions([
@@ -410,6 +410,63 @@ async function main() {
   globalThis.fetch = realFetch2;
   delete process.env.GEMINI_API_KEY;
   assert.match(String(tgCalls.filter((c) => c.method === "sendMessage").at(-1)!.body.text), /Something went wrong|couldn/i);
+
+  // 13. Phase 4: questions, commands, suggestions.
+  const AS = await import("../src/lib/assistant");
+  const spendAns = await AS.answerQuestion({ kind: "spend", category: "Food" });
+  assert.match(spendAns.text, /You spent ₹/);
+  const agendaAns = await AS.answerQuestion({ kind: "agenda" });
+  assert.ok(agendaAns.text.length > 0);
+  await createReminders([{ title: "Dentist appointment", date: local(60 * 24 * 2).date, time: "10:00", recurrence: "none", interval: 1, priority: "normal" }]);
+  const { createReminders: _cr } = await import("../src/lib/create");
+  void _cr;
+  const findAns = await AS.answerQuestion({ kind: "find", keyword: "dentist" });
+  assert.match(findAns.text, /Dentist appointment: .*in 2 days|tomorrow|in 1 days/);
+  const cands = await AS.resolveCommand({ action: "reschedule", target: "dentist", date: local(60 * 24 * 5).date, time: "17:00" });
+  assert.equal(cands[0].title, "Dentist appointment");
+  const moveMsg = await AS.executeCommand({ action: "reschedule", kind: "reminder", id: cands[0].id, date: local(60 * 24 * 5).date, time: "17:00" });
+  assert.match(moveMsg, /Moved to/);
+  const moved = (await AS.answerQuestion({ kind: "find", keyword: "dentist" })).text;
+  assert.match(moved, /5:00 pm|in 5 days|in 4 days/);
+  const tcands = await AS.resolveCommand({ action: "complete", target: "guitar" });
+  assert.equal(tcands[0].kind, "task");
+  await AS.executeCommand({ action: "complete", kind: "task", id: tcands[0].id });
+  assert.equal((await AS.resolveCommand({ action: "complete", target: "guitar" })).length, 0, "done task no longer matches");
+  const dcands = await AS.resolveCommand({ action: "delete", target: "dentist" });
+  await AS.executeCommand({ action: "delete", kind: "reminder", id: dcands[0].id });
+  assert.equal((await AS.answerQuestion({ kind: "find", keyword: "dentist" })).text.startsWith("I couldn't"), true);
+
+  // Parse route returns answers/proposals (offline engine).
+  const parseRoute = await import("../src/app/api/parse/route");
+  const pr = await (await parseRoute.POST(new Request("https://x/api/parse", { method: "POST", body: JSON.stringify({ text: "who owes me money" }) }))).json();
+  assert.ok(pr.answer?.text, "answer returned");
+
+  // Suggestions: same bill in 2 months → monthly reminder suggestion.
+  const SG = await import("../src/lib/suggestions");
+  const m0 = local(0).date;
+  const prevMonth = F.shiftMonth(m0.slice(0, 7), -1);
+  const prev2 = F.shiftMonth(m0.slice(0, 7), -2);
+  await createTransactions([
+    { type: "expense", amount: 1450, category: "Bills", note: "KSEB electricity", date: `${prevMonth}-10` },
+    { type: "expense", amount: 1300, category: "Bills", note: "KSEB electricity", date: `${prev2}-11` },
+  ]);
+  const sugg = await SG.getSuggestions();
+  const billSug = sugg.find((x) => x.kind === "recurring_bill");
+  assert.ok(billSug, "recurring bill spotted");
+  await SG.acceptSuggestion(billSug!.key);
+  assert.ok(!(await SG.getSuggestions()).find((x) => x.key === billSug!.key), "accepted suggestion disappears");
+  const rem = (await AS.answerQuestion({ kind: "find", keyword: "KSEB" })).text;
+  assert.match(rem, /Pay KSEB electricity/);
+
+  // Telegram question → answered.
+  await call({ message: { message_id: 30, chat: { id: 42 }, text: "who owes me money" } });
+  assert.match(String(tgCalls.filter((c) => c.method === "sendMessage").at(-1)!.body.text), /💬/);
+  await call({ message: { message_id: 31, chat: { id: 42 }, text: "Delete the KSEB reminder" } });
+  const conf = tgCalls.filter((c) => c.method === "sendMessage").at(-1)!;
+  assert.match(String(conf.body.text), /Confirm/);
+  const doBtn = (conf.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0];
+  await call({ callback_query: { id: "cbx", data: doBtn.callback_data, from: { id: 42 }, message: { message_id: 32, chat: { id: 42 }, text: "Confirm" } } });
+  assert.ok((await AS.answerQuestion({ kind: "find", keyword: "KSEB" })).text.startsWith("I couldn't"), "Telegram-confirmed delete ran");
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

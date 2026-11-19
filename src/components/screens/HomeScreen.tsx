@@ -8,6 +8,7 @@ import { dayKey, fmt, greeting, useData, useHidden } from "@/components/app/clie
 import { Empty, QuickTask, ReminderItem, Section, SkeletonList, TaskItem, TxItem, useNow } from "@/components/app/rows";
 import { useSheet } from "@/components/app/AddSheet";
 import { FavouritesStrip } from "@/components/app/FavouritesStrip";
+import { SuggestionCards } from "@/components/app/SuggestionCards";
 import type { AgendaItem, FocusTask, Transaction } from "@/components/types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
 
@@ -106,6 +107,7 @@ export function HomeScreen() {
       </div>
 
       <FavouritesStrip />
+      <SuggestionCards />
 
       {a.overdue.length > 0 && (
         <Link

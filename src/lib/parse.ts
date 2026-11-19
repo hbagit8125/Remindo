@@ -3,6 +3,7 @@ import { z } from "zod";
 import { reminderInputSchema, type ReminderInput } from "./reminder-input";
 import { taskInputSchema, type TaskInput } from "./tasks";
 import { dueInputSchema, type DueInput } from "./moneyplus";
+import { commandSchema, questionSchema, type Command, type Question } from "./assistant";
 import {
   CATEGORY_KEYWORDS,
   DEFAULT_CATEGORIES,
@@ -17,16 +18,39 @@ const resultSchema = z.object({
   transactions: z.array(transactionInputSchema).max(30).default([]),
   tasks: z.array(taskInputSchema).max(30).default([]),
   dues: z.array(dueInputSchema).max(10).default([]),
+  question: questionSchema.nullish(),
+  commands: z.array(commandSchema).max(5).default([]),
 });
 
-export type ParseResult = { reminders: ReminderInput[]; transactions: TransactionInput[]; tasks: TaskInput[]; dues?: DueInput[] };
+export type ParseResult = {
+  reminders: ReminderInput[];
+  transactions: TransactionInput[];
+  tasks: TaskInput[];
+  dues?: DueInput[];
+  question?: Question | null;
+  commands?: Command[];
+};
+
+const hasContent = (d: z.infer<typeof resultSchema>) =>
+  Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.question || d.commands.length);
 
 function systemPrompt(now = new Date()) {
   const ctx = localNowContext(now);
   return `You are a personal assistant. You turn a short note (typed or spoken, Indian English or Malayalam, amounts in rupees) into REMINDERS, TASKS and/or money TRANSACTIONS.
 Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.
 
-Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...]}. Any list may be empty.
+Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
+
+QUESTIONS: if they are ASKING about their own data, return only "question" (everything else empty):
+{"kind": "spend" | "income" | "agenda" | "find" | "tasks" | "balance" | "goals" | "dues" | "budget",
+ "category": expense category if they name one (use the category list below) or null,
+ "keyword": shop/item words to filter on, or for "find" the thing to look up (e.g. "Ammu birthday"), or null,
+ "from": "YYYY-MM-DD" or null, "to": "YYYY-MM-DD" or null}
+Examples: "How much did I spend on food in October?" → spend, category Food, from/to = 1st–last of the most recent past October. "Spent on Swiggy last month?" → spend, keyword "Swiggy". "What's due this week?" → agenda (Mon–Sun of this week). "When is Ammu's birthday?" → find, keyword "Ammu birthday". "How much budget is left?" → budget. "Who owes me money?" → dues. "My balance?" → balance.
+
+COMMANDS: if they want to CHANGE something that already exists, return "commands":
+{"action": "complete" | "snooze" | "reschedule" | "delete" | "log_payment", "target": words naming the reminder/task, "date": "YYYY-MM-DD" or null, "time": "HH:mm" or null, "minutes": snooze minutes or null}
+Examples: "Move the dentist to Friday 5pm" → reschedule, target "dentist", date=Friday, time 17:00. "Mark rent as paid" → two commands: log_payment "rent" and complete "rent". "Snooze gym by 30 minutes" → snooze, 30. "Cancel the plumber reminder" → delete "plumber". "Mark buy milk done" → complete "buy milk".
 
 TRANSACTIONS = money that already moved: "spent", "paid", "bought", "got", "received", "credited", or a plain "<thing> <amount>" like "petrol 1200".
 Each transaction:
@@ -277,7 +301,96 @@ export function parseTransactionLocally(text: string, now = new Date()): Transac
 }
 
 /** No-AI fallback: chrono-node for the date, keywords for repetition and priority. */
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
+/** Simple date ranges in plain words: today, this week, last month, "in October". */
+function rangeFromText(t: string, now: Date): { from: string; to: string } | null {
+  const d = (x: Date) => fmtLocal(x, "yyyy-MM-dd");
+  const today = d(now);
+  const lower = t.toLowerCase();
+  if (/\btoday\b/.test(lower)) return { from: today, to: today };
+  if (/\byesterday\b/.test(lower)) {
+    const y = d(new Date(now.getTime() - 86400000));
+    return { from: y, to: y };
+  }
+  if (/\btomorrow\b/.test(lower)) {
+    const y = d(new Date(now.getTime() + 86400000));
+    return { from: y, to: y };
+  }
+  const dow = (Number(fmtLocal(now, "i")) + 6) % 7; // 0 = Monday
+  if (/\bthis week\b/.test(lower)) return { from: d(new Date(now.getTime() - dow * 86400000)), to: d(new Date(now.getTime() + (6 - dow) * 86400000)) };
+  if (/\blast week\b/.test(lower)) return { from: d(new Date(now.getTime() - (dow + 7) * 86400000)), to: d(new Date(now.getTime() - (dow + 1) * 86400000)) };
+  const [y, m] = today.split("-").map(Number);
+  const monthRange = (yy: number, mm: number) => ({
+    from: `${yy}-${String(mm).padStart(2, "0")}-01`,
+    to: `${yy}-${String(mm).padStart(2, "0")}-${String(new Date(Date.UTC(yy, mm, 0)).getUTCDate()).padStart(2, "0")}`,
+  });
+  if (/\blast month\b/.test(lower)) return m === 1 ? monthRange(y - 1, 12) : monthRange(y, m - 1);
+  if (/\bthis month\b/.test(lower)) return { from: `${today.slice(0, 7)}-01`, to: today };
+  const mi = MONTHS.findIndex((mn) => new RegExp(`\\b(${mn}|${mn.slice(0, 3)})\\b`).test(lower));
+  if (mi >= 0) return monthRange(mi + 1 > m ? y - 1 : y, mi + 1);
+  return null;
+}
+
+/** Offline understanding of questions and edit commands. */
+export function parseAssistantLocally(text: string, now = new Date()): { question?: Question; commands?: Command[] } | null {
+  const t = text.trim().replace(/[?!.]+$/, "");
+  const lower = t.toLowerCase();
+  const range = rangeFromText(t, now);
+
+  if (/^(how much|what did i spend|total spent|spent how much|how much have i spent)/.test(lower) || /\bhow much\b.*\b(spen[dt]|earn|receiv|got)/.test(lower)) {
+    const income = /\b(earn|earned|receiv|income|got paid|salary)\b/.test(lower);
+    let category: string | null = null;
+    for (const [re, cat] of CATEGORY_KEYWORDS) if (re.test(lower)) {
+      category = cat;
+      break;
+    }
+    if (/budget/.test(lower)) return { question: { kind: "budget" } };
+    const kw = !category ? lower.match(/\b(?:on|at)\s+([a-z][a-z ]{1,25}?)(?:\s+(?:in|this|last|today|yesterday)\b|$)/)?.[1] || null : null;
+    return { question: { kind: income ? "income" : "spend", category: income ? null : category, keyword: kw, from: range?.from, to: range?.to } };
+  }
+  if (/^(what('?s| is)? (due|on|up|coming|planned)|what do i have|anything (due|on)|my (schedule|agenda|plan))/.test(lower))
+    return { question: { kind: "agenda", from: range?.from, to: range?.to } };
+  const when = t.match(/^when(?:'s| is| does| do)?\s+(.+)$/i);
+  if (when) return { question: { kind: "find", keyword: when[1].replace(/\b(due|happen|coming up)\b/gi, "").trim() } };
+  if (/\b(balance|how much (money )?(do i have|is in))\b/.test(lower)) return { question: { kind: "balance" } };
+  if (/\b(budget)\b.*\b(left|remaining|status)|\bhow much (budget|left)\b/.test(lower)) return { question: { kind: "budget" } };
+  if (/\bwho owes|\bdo i owe|\bowes me\?|\bmy dues\b/.test(lower)) return { question: { kind: "dues" } };
+  if (/\b(my goals|savings goals?|goal progress)\b/.test(lower)) return { question: { kind: "goals" } };
+  if (/^(what are )?my (tasks|to-?dos?)\b|^(open|pending) tasks/.test(lower)) return { question: { kind: "tasks" } };
+
+  const paid = t.match(/^mark\s+(?:the\s+)?(.+?)\s+as\s+paid$/i);
+  if (paid) return { commands: [{ action: "log_payment", target: paid[1] }, { action: "complete", target: paid[1] }] };
+  const done = t.match(/^(?:mark|tick(?: off)?|complete|finish(?:ed)?)\s+(?:the\s+)?(.+?)(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$/i);
+  if (done && /^(mark|tick|complete|finish)/i.test(t)) return { commands: [{ action: "complete", target: done[1] }] };
+  const snooze = t.match(/^snooze\s+(?:the\s+)?(.+?)\s+(?:for|by)\s+(\d+)\s*(m|min|mins|minutes?|h|hrs?|hours?)$/i);
+  if (snooze) return { commands: [{ action: "snooze", target: snooze[1], minutes: Number(snooze[2]) * (/^h/i.test(snooze[3]) ? 60 : 1) }] };
+  const move = t.match(/^(?:move|reschedule|shift|postpone|change)\s+(?:the\s+)?(.+?)\s+to\s+(.+)$/i);
+  if (move) {
+    const offsetMin = Math.round((toFakeUtc(now).getTime() - now.getTime()) / 60000);
+    const when = chrono.parse(move[2], { instant: now, timezone: offsetMin }, { forwardDate: true })[0];
+    if (when) {
+      const dt = when.start.date();
+      return {
+        commands: [
+          {
+            action: "reschedule",
+            target: move[1],
+            date: when.start.isCertain("day") || when.start.isCertain("weekday") ? fmtLocal(dt, "yyyy-MM-dd") : null,
+            time: when.start.isCertain("hour") ? fmtLocal(dt, "HH:mm") : null,
+          },
+        ],
+      };
+    }
+  }
+  const del = t.match(/^(?:delete|remove|cancel)\s+(?:the\s+)?(.+?)(?:\s+(?:reminder|task))?$/i);
+  if (del) return { commands: [{ action: "delete", target: del[1] }] };
+  return null;
+}
+
 export function parseLocally(text: string, now = new Date()): ParseResult {
+  const asked = parseAssistantLocally(text, now);
+  if (asked) return { reminders: [], transactions: [], tasks: [], dues: [], question: asked.question || null, commands: asked.commands || [] };
   const sms = parseBankSms(text, now);
   if (sms) return { reminders: [], transactions: [sms], tasks: [], dues: [] };
   // "Call mom at 7, and spent 50 on tea" → handle each part separately.
@@ -411,8 +524,7 @@ export async function parsePrompt(text: string): Promise<ParseResult & { engine:
   const errors: string[] = [];
   const valid = (engine: string, raw: unknown) => {
     const parsed = resultSchema.safeParse(raw);
-    if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length || parsed.data.tasks.length || parsed.data.dues.length))
-      return { ...parsed.data, engine };
+    if (parsed.success && hasContent(parsed.data)) return { ...parsed.data, engine };
     throw new Error(parsed.success ? "nothing found" : parsed.error.issues[0]?.message);
   };
   const attempt = (engine: string, fn: () => Promise<unknown>) =>

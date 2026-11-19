@@ -139,7 +139,15 @@ type SpeechRec = {
   onerror: ((e: { error: string }) => void) | null;
 };
 
+type Candidate = { kind: "reminder" | "task"; id: string; title: string; occurrenceAt?: string; description: string };
+type Proposal = {
+  command: { action: string; target: string; date?: string | null; time?: string | null; minutes?: number | null };
+  candidates: Candidate[];
+};
+
 const EXAMPLES = [
+  "How much did I spend on food this month?",
+  "What's due this week?",
   "Spent 450 on lunch at Zomato",
   "Petrol 1200 yesterday, card",
   "Call mom tomorrow at 7pm",
@@ -155,7 +163,7 @@ type Draft =
   | { kind: "expense"; value: TransactionInput }
   | { kind: "task"; value: TaskInput };
 
-function useSpeech(onFinal: (text: string) => void, onText: (text: string) => void) {
+function useSpeech(onFinal: (text: string) => void, onText: (text: string) => void, lang = "en-IN") {
   const recRef = useRef<SpeechRec | null>(null);
   const textRef = useRef("");
   const [listening, setListening] = useState(false);
@@ -198,6 +206,7 @@ function useSpeech(onFinal: (text: string) => void, onText: (text: string) => vo
     textRef.current = "";
     setError("");
     setListening(true);
+    rec.lang = lang;
     rec.start();
   };
   return { listening, supported, error, toggle };
@@ -211,16 +220,44 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [note, setNote] = useState("");
+  const [answer, setAnswer] = useState<{ text: string; lines?: string[] } | null>(null);
+  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [doneIds, setDoneIds] = useState<string[]>([]);
+  const [lang, setLang] = useState<"en-IN" | "ml-IN">(() => {
+    try {
+      return (localStorage.getItem("micLang") as "en-IN" | "ml-IN") || "en-IN";
+    } catch {
+      return "en-IN";
+    }
+  });
+  const switchLang = () => {
+    const next = lang === "en-IN" ? "ml-IN" : "en-IN";
+    setLang(next);
+    try {
+      localStorage.setItem("micLang", next);
+    } catch {}
+  };
 
   const parse = useCallback(async (input: string) => {
     if (!input.trim()) return;
     setLoading(true);
     setNote("");
     try {
-      const r = await api<{ reminders: ReminderInput[]; transactions: TransactionInput[]; tasks: TaskInput[]; dues?: DueInput[]; warning?: string }>("/api/parse", {
+      const r = await api<{
+        reminders: ReminderInput[];
+        transactions: TransactionInput[];
+        tasks: TaskInput[];
+        dues?: DueInput[];
+        warning?: string;
+        answer?: { text: string; lines?: string[] } | null;
+        proposals?: Proposal[];
+      }>("/api/parse", {
         method: "POST",
         json: { text: input },
       });
+      setAnswer(r.answer || null);
+      setProposals(r.proposals || []);
+      setDoneIds([]);
       setDrafts([
         ...r.transactions.map((value) => ({ kind: "expense" as const, value })),
         ...(r.dues || []).map((value) => ({ kind: "due" as const, value })),
@@ -236,7 +273,21 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
     }
   }, []);
 
-  const speech = useSpeech(parse, setText);
+  const speech = useSpeech(parse, setText, lang);
+
+  async function runProposal(p: Proposal, c: Candidate) {
+    try {
+      const r = await api<{ message: string }>("/api/command", {
+        method: "POST",
+        json: { action: p.command.action, kind: c.kind, id: c.id, occurrenceAt: c.occurrenceAt, date: p.command.date, time: p.command.time, minutes: p.command.minutes },
+      });
+      setDoneIds((x) => [...x, `${p.command.action}:${c.id}`]);
+      toast({ message: r.message });
+      refreshAll();
+    } catch (e) {
+      toast({ message: (e as Error).message, tone: "error" });
+    }
+  }
 
   // Opened from "Share → Remindo" (e.g. a bank SMS): understand it straight away.
   const autoRan = useRef(false);
@@ -293,6 +344,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
           className="min-h-[56px] flex-1 resize-none rounded-2xl border border-line bg-raised px-4 py-3 text-[15px] text-fg outline-none placeholder:text-subtle focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20"
         />
         {speech.supported && (
+          <div className="flex flex-col items-center gap-1">
           <button
             onClick={speech.toggle}
             aria-label="Speak"
@@ -303,13 +355,65 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
           >
             {speech.listening ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
           </button>
+          <button onClick={switchLang} className="rounded-md px-1.5 text-[11px] font-semibold text-muted hover:text-fg" title="Voice language">
+            {lang === "en-IN" ? "EN" : "മല"}
+          </button>
+          </div>
         )}
       </div>
+
+      {answer && (
+        <div className="animate-pop mt-4 rounded-2xl border border-indigo-400/30 bg-indigo-500/10 p-4">
+          <p className="text-[15px] font-medium">💬 {answer.text}</p>
+          {answer.lines?.length ? (
+            <ul className="mt-2 space-y-1 text-sm text-muted">
+              {answer.lines.map((l, i) => (
+                <li key={i}>• {l}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      )}
+
+      {proposals.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {proposals.map((p, pi) =>
+            p.candidates.length ? (
+              p.candidates.map((c) => {
+                const done = doneIds.includes(`${p.command.action}:${c.id}`);
+                return (
+                  <div key={`${pi}-${c.id}`} className="card flex items-center gap-3 rounded-2xl p-3">
+                    <span className="min-w-0 flex-1 text-sm">{c.description}</span>
+                    <button
+                      disabled={done}
+                      onClick={() => runProposal(p, c)}
+                      className={clsx(
+                        "shrink-0 rounded-xl px-3 py-2 text-xs font-semibold",
+                        done ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" : "bg-fg text-[var(--bg)]",
+                      )}
+                    >
+                      {done ? "Done ✓" : "Do it"}
+                    </button>
+                  </div>
+                );
+              })
+            ) : (
+              <p key={pi} className="text-sm text-muted">
+                Couldn&apos;t find anything matching “{p.command.target}”.
+              </p>
+            ),
+          )}
+        </div>
+      )}
 
       {!drafts.length && (
         <>
           <button
-            onClick={() => parse(text)}
+            onClick={() => {
+              setAnswer(null);
+              setProposals([]);
+              parse(text);
+            }}
             disabled={loading || !text.trim()}
             className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-500 py-3.5 font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110 disabled:opacity-40"
           >
