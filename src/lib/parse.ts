@@ -96,7 +96,11 @@ async function withGemini(text: string, model: string, timeoutMs: number): Promi
     },
     timeoutMs,
   );
-  if (!res.ok) throw new Error(`Gemini ${model} ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    const reason = body.match(/"status":\s*"([A-Z_]+)"/)?.[1] || "";
+    throw new Error(`Gemini ${model} ${res.status} ${reason}`.trim());
+  }
   const json = await res.json();
   const out = json?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "").join("") || "";
   return extractJson(out);
@@ -287,25 +291,56 @@ function parseReminderLocally(text: string, now: Date): ReminderInput[] {
  * (if a key is set) → the offline parser. Each step has a time limit so the
  * whole thing stays quick even when Google is overloaded.
  */
-export async function parsePrompt(text: string): Promise<ParseResult & { engine: string; warning?: string }> {
+export async function parsePrompt(text: string): Promise<ParseResult & { engine: string; warning?: string; errors?: string[] }> {
   const errors: string[] = [];
-  const chain: [string, () => Promise<unknown>][] = [
-    ["gemini", () => withGemini(text, GEMINI_PRIMARY(), 7000)],
-    ["gemini-backup", () => withGemini(text, GEMINI_BACKUP(), 7000)],
-  ];
-  if (process.env.ANTHROPIC_API_KEY) chain.push(["claude", () => withClaude(text)]);
-  if (process.env.GROQ_API_KEY) chain.push(["groq", () => withGroq(text)]);
+  const valid = (engine: string, raw: unknown) => {
+    const parsed = resultSchema.safeParse(raw);
+    if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length)) return { ...parsed.data, engine };
+    throw new Error(parsed.success ? "nothing found" : parsed.error.issues[0]?.message);
+  };
+  const attempt = (engine: string, fn: () => Promise<unknown>) =>
+    fn()
+      .then((raw) => valid(engine, raw))
+      .catch((e) => {
+        errors.push(`${engine}: ${(e as Error).message}`);
+        throw e;
+      });
 
-  for (const [engine, fn] of chain) {
+  // Gemini, with a "hedge": if the main model hasn't answered in 2.5s, the
+  // backup model starts too and whichever answers first wins. Worst case ≈ 6s.
+  if (process.env.GEMINI_API_KEY) {
+    const primary = attempt("gemini", () => withGemini(text, GEMINI_PRIMARY(), 6000));
+    const backup = new Promise<Awaited<typeof primary>>((resolve, reject) => {
+      let started = false;
+      const start = () => {
+        if (started) return;
+        started = true;
+        attempt("gemini-backup", () => withGemini(text, GEMINI_BACKUP(), 5000)).then(resolve, reject);
+      };
+      const timer = setTimeout(start, 2500);
+      primary.then(
+        () => clearTimeout(timer),
+        () => {
+          clearTimeout(timer);
+          start(); // main model failed fast (busy / quota) → try backup right away
+        },
+      );
+    });
     try {
-      const raw = await fn();
-      const parsed = resultSchema.safeParse(raw);
-      if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length)) {
-        return { ...parsed.data, engine };
-      }
-      errors.push(`${engine}: ${parsed.success ? "nothing found" : parsed.error.issues[0]?.message}`);
-    } catch (e) {
-      errors.push(`${engine}: ${(e as Error).message}`);
+      return await Promise.any([primary, backup]);
+    } catch {
+      // both Gemini models failed; fall through
+    }
+  }
+  for (const [engine, fn, enabled] of [
+    ["claude", () => withClaude(text), Boolean(process.env.ANTHROPIC_API_KEY)],
+    ["groq", () => withGroq(text), Boolean(process.env.GROQ_API_KEY)],
+  ] as const) {
+    if (!enabled) continue;
+    try {
+      return await attempt(engine, fn);
+    } catch {
+      // next
     }
   }
   console.warn("[remindo:parse] all AI engines failed:", errors.join(" | "));
@@ -313,6 +348,7 @@ export async function parsePrompt(text: string): Promise<ParseResult & { engine:
     ...parseLocally(text),
     engine: "local",
     warning: "The AI is busy right now, so I used the simple parser. Please check the details before saving.",
+    errors,
   };
 }
 
