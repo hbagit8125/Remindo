@@ -8,6 +8,8 @@ export default function manifest(): MetadataRoute.Manifest {
     display: "standalone",
     background_color: "#0b0b12",
     theme_color: "#0b0b12",
+    // Android "Share → Remindo": bank SMS, UPI messages, any text.
+    share_target: { action: "/share", method: "GET", params: { title: "title", text: "text", url: "url" } },
     // Long-press the app icon on Android.
     shortcuts: [
       { name: "Add expense", short_name: "Expense", url: "/?add=expense", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },

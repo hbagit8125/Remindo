@@ -13,7 +13,7 @@ import { ToastProvider } from "./toast";
 const NAV = [
   { href: "/", label: "Home", icon: Home, match: ["/"] },
   { href: "/plan", label: "Plan", icon: CalendarCheck, match: ["/plan", "/reminders"] },
-  { href: "/expenses", label: "Money", icon: Wallet, match: ["/expenses", "/insights"] },
+  { href: "/expenses", label: "Money", icon: Wallet, match: ["/expenses", "/insights", "/accounts", "/goals", "/dues"] },
   { href: "/more", label: "More", icon: LayoutGrid, match: ["/more"] },
 ];
 
@@ -87,11 +87,14 @@ function Frame({ children }: { children: React.ReactNode }) {
     const url = new URL(window.location.href);
     const add = url.searchParams.get("add") as SheetMode | "search" | null;
     if (!add) return;
+    const text = url.searchParams.get("text") || undefined;
     url.searchParams.delete("add");
+    url.searchParams.delete("text");
     window.history.replaceState(null, "", url.pathname + url.search);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of the launch URL
     if (add === "search") setSearchOpen(true);
-    else if (["ask", "reminder", "task", "expense"].includes(add)) open({ mode: add });
+    else if (add === "ask") open({ mode: "ask", text });
+    else if (["reminder", "task", "expense"].includes(add)) open({ mode: add as "reminder" | "task" | "expense" });
   }, [open]);
 
   return (

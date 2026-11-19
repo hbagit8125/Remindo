@@ -4,7 +4,8 @@ import { db, telegramDrafts } from "@/db";
 import { safeEqual } from "@/lib/auth";
 import { getTelegram, setSetting } from "@/lib/settings";
 import { answerCallback, downloadFile, editTelegram, h, sendTelegram, webhookSecret } from "@/lib/telegram";
-import { parsePrompt, transcribeAudio, type ParseResult } from "@/lib/parse";
+import { parsePrompt, scanReceipt, transcribeAudio, type ParseResult } from "@/lib/parse";
+import { createDues } from "@/lib/moneyplus";
 import { createReminders, createTransactions } from "@/lib/create";
 import { createTasks, focusFrom, listTasks } from "@/lib/tasks";
 import { ACTIONS, performAction, type ActionName } from "@/lib/actions";
@@ -23,6 +24,8 @@ type TgMessage = {
   text?: string;
   caption?: string;
   voice?: { file_id: string; mime_type?: string; duration: number };
+  photo?: { file_id: string; width: number; height: number; file_size?: number }[];
+  document?: { file_id: string; mime_type?: string; file_size?: number };
   audio?: { file_id: string; mime_type?: string; duration: number };
 };
 type TgUpdate = {
@@ -33,6 +36,7 @@ type TgUpdate = {
 const HELP = `<b>What I can do</b>
 • Send me anything to save: <i>"Spent 200 on chai"</i>, <i>"Call mom tomorrow 7pm"</i>, <i>"Buy milk"</i>, <i>"Salary credited 85000"</i>
 • Send a <b>voice note</b> (English or Malayalam) and I'll do the same
+• Send a <b>photo of a bill</b> or a UPI screenshot, or <b>forward a bank SMS</b>, to log the expense
 • Tap the buttons on reminders to mark them done or snooze
 • /today: today's focus tasks and reminders
 • /help: this message`;
@@ -83,6 +87,23 @@ async function onMessage(m: TgMessage) {
   if (text === "/help") return sendTelegram(HELP);
   if (text === "/today") return sendTelegram(await todayText());
 
+  // A photo (or image file) of a receipt / UPI screenshot → expense draft.
+  const image = m.photo?.length ? { id: m.photo[m.photo.length - 1].file_id, mime: "image/jpeg" } : m.document?.mime_type?.startsWith("image/") ? { id: m.document.file_id, mime: m.document.mime_type } : null;
+  if (image) {
+    await sendTelegram("🧾 Reading the image…");
+    const buf = await downloadFile(image.id);
+    const scanned = await scanReceipt(buf.toString("base64"), image.mime);
+    if (!scanned.transactions.length) return sendTelegram("I couldn't find an amount in that image. Try a clearer photo.");
+    const result: ParseResult = { reminders: [], tasks: [], transactions: scanned.transactions, dues: [] };
+    const [d] = await db().insert(telegramDrafts).values({ payload: result }).returning();
+    return sendTelegram(draftText(result), [
+      [
+        { text: "✅ Save", callback_data: `s:${d.id}` },
+        { text: "✖ Cancel", callback_data: `c:${d.id}` },
+      ],
+    ]);
+  }
+
   let input = text;
   const voice = m.voice || m.audio;
   if (voice) {
@@ -94,12 +115,12 @@ async function onMessage(m: TgMessage) {
   if (!input) return sendTelegram(`I can read text and voice notes.\n\n${HELP}`);
 
   const parsed = await parsePrompt(input);
-  if (!parsed.reminders.length && !parsed.transactions.length && !parsed.tasks.length) {
+  if (!parsed.reminders.length && !parsed.transactions.length && !parsed.tasks.length && !parsed.dues?.length) {
     return sendTelegram("I couldn't find a reminder or expense in that. Try: <i>Spent 150 on lunch</i> or <i>Pay rent on the 5th every month</i>");
   }
   const [draft] = await db()
     .insert(telegramDrafts)
-    .values({ payload: { reminders: parsed.reminders, transactions: parsed.transactions, tasks: parsed.tasks } })
+    .values({ payload: { reminders: parsed.reminders, transactions: parsed.transactions, tasks: parsed.tasks, dues: parsed.dues || [] } })
     .returning();
   const warn = parsed.engine === "local" ? "\n\n<i>⚠️ AI was unavailable, so I used the simple parser. Please check.</i>" : "";
   await sendTelegram(`${draftText(parsed)}${warn}`, [
@@ -143,6 +164,7 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
     await createReminders(p.reminders || []);
     await createTransactions(p.transactions || []);
     await createTasks(p.tasks || []);
+    await createDues(p.dues || []);
     await answerCallback(q.id, "Saved");
     return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ <b>Saved</b>`);
   }
@@ -156,6 +178,9 @@ function draftText(p: ParseResult) {
     lines.push(
       `${inc ? "💰" : "💸"} ${inc ? "+" : ""}${formatINR(Math.round(t.amount * 100))} · ${h(t.note || t.category)} · ${h(t.category)}${t.method ? ` · ${t.method.toUpperCase()}` : ""}${t.date !== fmtLocal(new Date(), "yyyy-MM-dd") ? ` · ${t.date}` : ""}`,
     );
+  }
+  for (const d of p.dues || []) {
+    lines.push(`🤝 ${d.direction === "they_owe" ? `${h(d.person)} owes you` : `You owe ${h(d.person)}`} ${formatINR(Math.round(d.amount * 100))}${d.note ? ` · ${h(d.note)}` : ""}`);
   }
   for (const t of p.tasks || []) {
     lines.push(`☑️ <b>${h(t.title)}</b>${t.dueDate ? ` · by ${t.dueDate}` : ""}${t.focus ? " · today" : ""}${t.priority === "high" ? " · ❗" : ""}`);

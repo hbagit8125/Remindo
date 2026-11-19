@@ -330,6 +330,9 @@ export function MoreScreen() {
         <Row icon={<BellRing className="h-[18px] w-[18px]" />} title="Week ahead" desc="Sunday evening · next 7 days">
           <Toggle label="Week ahead" on={prefs.emails.weekly} onChange={(v) => savePrefs({ ...prefs, emails: { ...prefs.emails, weekly: v } })} />
         </Row>
+        <Row icon={<Download className="h-[18px] w-[18px]" />} title="Monthly money report" desc="1st of each month · totals, top categories, goals">
+          <Toggle label="Monthly report" on={prefs.emails.monthly} onChange={(v) => savePrefs({ ...prefs, emails: { ...prefs.emails, monthly: v } })} />
+        </Row>
       </Group>
 
       <Group title="App">

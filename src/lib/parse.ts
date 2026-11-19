@@ -2,6 +2,7 @@ import * as chrono from "chrono-node";
 import { z } from "zod";
 import { reminderInputSchema, type ReminderInput } from "./reminder-input";
 import { taskInputSchema, type TaskInput } from "./tasks";
+import { dueInputSchema, type DueInput } from "./moneyplus";
 import {
   CATEGORY_KEYWORDS,
   DEFAULT_CATEGORIES,
@@ -15,16 +16,17 @@ const resultSchema = z.object({
   reminders: z.array(reminderInputSchema).max(20).default([]),
   transactions: z.array(transactionInputSchema).max(30).default([]),
   tasks: z.array(taskInputSchema).max(30).default([]),
+  dues: z.array(dueInputSchema).max(10).default([]),
 });
 
-export type ParseResult = { reminders: ReminderInput[]; transactions: TransactionInput[]; tasks: TaskInput[] };
+export type ParseResult = { reminders: ReminderInput[]; transactions: TransactionInput[]; tasks: TaskInput[]; dues?: DueInput[] };
 
 function systemPrompt(now = new Date()) {
   const ctx = localNowContext(now);
   return `You are a personal assistant. You turn a short note (typed or spoken, Indian English or Malayalam, amounts in rupees) into REMINDERS, TASKS and/or money TRANSACTIONS.
 Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.
 
-Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...]}. Any list may be empty.
+Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...]}. Any list may be empty.
 
 TRANSACTIONS = money that already moved: "spent", "paid", "bought", "got", "received", "credited", or a plain "<thing> <amount>" like "petrol 1200".
 Each transaction:
@@ -64,6 +66,12 @@ Each task:
   "focus": true if they say today / now / "today's list", else false,
   "priority": "high" if urgent/important, "low" if someday/maybe, else "normal"
 }
+
+DUES = money someone owes you or you owe someone: "Arun owes me 600", "I owe Priya 200".
+Each due: {"person": name, "direction": "they_owe" | "i_owe", "amount": rupees, "note": what for or null, "remindOn": "YYYY-MM-DD" if they say when to collect/pay, else null}
+"Paid 1200 for dinner, Arun owes 600" = one expense of 1200 AND one due (Arun, they_owe, 600, "dinner").
+
+BANK / UPI SMS: if the text looks like a bank SMS ("debited", "credited", "A/c XX1234", "UPI Ref", "Avl Bal"), make ONE transaction: debited/spent/sent = expense, credited/received = income; amount from "Rs"/"INR"; merchant from the payee/VPA/"at …" name in plain words (e.g. "swiggy@icici" → "Swiggy"); method "upi" for UPI, "card" for card; date from the SMS if present. Ignore the balance amount.
 
 Rules: "Paid rent 15000, remind me next month" = one transaction AND one monthly reminder with amount. "Netflix 649 every month on the 12th" = a monthly reminder with amount 649 (not a transaction unless they say they paid). Birthdays are yearly. "Every weekday" = weekly MO-FR.`;
 }
@@ -171,6 +179,51 @@ async function withGroq(text: string): Promise<unknown> {
 const AMOUNT_RE = /(?:₹|rs\.?|inr)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|lakh|lakhs|l)?\b(?!\s*(?:am|pm|th|st|nd|rd|min|hour|day|week|month))/i;
 const MONEY_MOVED_RE = /\b(spent|spend|paid|pay(?:ed)?|bought|cost|got|received|credited|salary|refund)\b/i;
 
+/** Bank/UPI SMS → one transaction. Returns null if it doesn't look like a bank SMS. */
+export function parseBankSms(text: string, now = new Date()): TransactionInput | null {
+  if (!/\b(debited|credited|spent|sent|received)\b/i.test(text) || !/\b(a\/c|acct|account|upi|card|avl|bal|ref)\b/i.test(text)) return null;
+  const amt = text.match(/(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)/i);
+  if (!amt) return null;
+  const amount = Number(amt[1].replace(/,/g, ""));
+  if (!amount) return null;
+  const income = /\bcredited\b|\breceived\b/i.test(text) && !/\bdebited\b/i.test(text);
+  const vpa = text.match(/\b(?:to|from|vpa)\s+([a-z0-9._-]+)@[a-z]+/i)?.[1];
+  const at = text.match(
+    /\b(?:at|to|towards|from|info[:\s-]*)\s+(?!a\/c|ac\b|acct|account|your)([A-Za-z][A-Za-z0-9 &'-]{2,30}?)(?=\s+(?:on|via|ref|upi|avl|thru|by)\b|\s*[.,(]|$)/i,
+  )?.[1];
+  const raw = vpa || at || null;
+  const merchant = raw ? raw.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() : null;
+  const dm = text.match(/\b(\d{1,2})[-/ ](\d{1,2}|[A-Za-z]{3})[-/ ](\d{2,4})\b/);
+  let date = fmtLocal(now, "yyyy-MM-dd");
+  if (dm) {
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const mo = /^\d+$/.test(dm[2]) ? Number(dm[2]) : months.indexOf(dm[2].toLowerCase()) + 1;
+    const yr = dm[3].length === 2 ? 2000 + Number(dm[3]) : Number(dm[3]);
+    if (mo >= 1 && mo <= 12 && Number(dm[1]) <= 31) {
+      const cand = `${yr}-${String(mo).padStart(2, "0")}-${String(Number(dm[1])).padStart(2, "0")}`;
+      if (cand <= date) date = cand;
+    }
+  }
+  let category = "Other";
+  const hay = `${merchant || ""} ${text}`.toLowerCase();
+  for (const [re, cat] of CATEGORY_KEYWORDS) {
+    if (re.test(hay) && cat !== "Salary") {
+      category = cat;
+      break;
+    }
+  }
+  if (income) category = /salary/i.test(text) ? "Salary" : "Other";
+  return transactionInputSchema.parse({
+    type: income ? "income" : "expense",
+    amount,
+    category,
+    note: merchant ? (income ? `From ${merchant}` : merchant) : income ? "Money received" : "Bank debit",
+    merchant,
+    method: /\bupi\b/i.test(text) ? "upi" : /\bcard\b/i.test(text) ? "card" : "bank",
+    date,
+  });
+}
+
 /** No-AI fallback for money: "spent 450 on lunch", "petrol 1200 yesterday". */
 export function parseTransactionLocally(text: string, now = new Date()): TransactionInput | null {
   const lower = text.toLowerCase();
@@ -225,13 +278,26 @@ export function parseTransactionLocally(text: string, now = new Date()): Transac
 
 /** No-AI fallback: chrono-node for the date, keywords for repetition and priority. */
 export function parseLocally(text: string, now = new Date()): ParseResult {
+  const sms = parseBankSms(text, now);
+  if (sms) return { reminders: [], transactions: [sms], tasks: [], dues: [] };
   // "Call mom at 7, and spent 50 on tea" → handle each part separately.
   const parts = text
-    .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b))/i)
+    .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b)|,\s*(?=(?:\w+\s+owes\b|i\s+owe\b)))/i)
     .map((p) => p.replace(/^(?:also|then|plus)\s+/i, "").trim())
     .filter((p) => p.length > 2);
-  const result: ParseResult = { reminders: [], transactions: [], tasks: [] };
+  const result: ParseResult = { reminders: [], transactions: [], tasks: [], dues: [] };
   for (const part of parts.length ? parts : [text]) {
+    const owe = part.match(/^\s*(?:(\w[\w ]{0,30}?)\s+owes(?:\s+me)?|i\s+owe\s+(\w[\w ]{0,30}?))\s+(?:rs\.?|₹)?\s*([\d,]+)/i);
+    if (owe) {
+      result.dues!.push(
+        dueInputSchema.parse({
+          person: (owe[1] || owe[2]).trim().replace(/\b\w/g, (c) => c.toUpperCase()),
+          direction: owe[1] ? "they_owe" : "i_owe",
+          amount: Number(owe[3].replace(/,/g, "")),
+        }),
+      );
+      continue;
+    }
     const tx = parseTransactionLocally(part, now);
     if (tx) {
       result.transactions.push(tx);
@@ -345,7 +411,8 @@ export async function parsePrompt(text: string): Promise<ParseResult & { engine:
   const errors: string[] = [];
   const valid = (engine: string, raw: unknown) => {
     const parsed = resultSchema.safeParse(raw);
-    if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length || parsed.data.tasks.length)) return { ...parsed.data, engine };
+    if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length || parsed.data.tasks.length || parsed.data.dues.length))
+      return { ...parsed.data, engine };
     throw new Error(parsed.success ? "nothing found" : parsed.error.issues[0]?.message);
   };
   const attempt = (engine: string, fn: () => Promise<unknown>) =>
@@ -458,4 +525,42 @@ export async function transcribeAudio(audio: Buffer, mimeType = "audio/ogg"): Pr
     }
   }
   throw new Error(`Couldn't transcribe (${errors.join("; ") || "no AI key set"})`);
+}
+
+const scanSchema = z.object({ transactions: z.array(transactionInputSchema).max(5).default([]) });
+
+/** Read a receipt / UPI screenshot with Gemini vision. Returns expense drafts to confirm. */
+export async function scanReceipt(imageBase64: string, mimeType: string): Promise<{ transactions: TransactionInput[]; engine: string }> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error("GEMINI_API_KEY not set");
+  const ctx = localNowContext();
+  const prompt = `This is a photo of a bill/receipt or a screenshot of a UPI/bank payment. Today is ${ctx.date} (${ctx.tz}).
+Return ONLY JSON {"transactions":[{"type":"expense"|"income","amount":rupees (the final total paid, not subtotal),"category":one of ${DEFAULT_CATEGORIES.join(", ")},"note":short description,"merchant":shop/payee name or null,"method":"upi"|"card"|"cash"|"bank" or null,"date":"YYYY-MM-DD" (from the image, else today)}]}.
+Usually exactly one transaction. A payment *received* screenshot is income. If you can't read an amount, return {"transactions":[]}.`;
+  const errors: string[] = [];
+  for (const model of [GEMINI_PRIMARY(), GEMINI_BACKUP()]) {
+    try {
+      const res = await fetchWithTimeout(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json", temperature: 0 },
+          }),
+        },
+        20000,
+      );
+      if (!res.ok) throw new Error(`Gemini ${model} ${res.status}`);
+      const json = await res.json();
+      const out = json?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "").join("") || "";
+      const parsed = scanSchema.safeParse(extractJson(out));
+      if (parsed.success) return { transactions: parsed.data.transactions, engine: model };
+      errors.push(`${model}: bad output`);
+    } catch (e) {
+      errors.push((e as Error).message);
+    }
+  }
+  throw new Error(`Couldn't read the image (${errors.join("; ")})`);
 }

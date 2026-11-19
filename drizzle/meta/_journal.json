@@ -29,6 +29,13 @@
       "when": 1795096864183,
       "tag": "0003_tasks",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795101480113,
+      "tag": "0004_money_plus",
+      "breakpoints": true
     }
   ]
 }

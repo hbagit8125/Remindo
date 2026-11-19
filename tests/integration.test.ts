@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -338,6 +338,78 @@ async function main() {
   const ev2 = await sendEveningReview(new Date());
   void ev2;
   assert.match(sent.at(-1)!.html, /Tasks finished/);
+
+  // 12. Phase 3: accounts, transfers, favourites, dues, goals, year, monthly report, SMS.
+  const MP = await import("../src/lib/moneyplus");
+  const { accounts } = await import("../src/db");
+  const { createTransactions } = await import("../src/lib/create");
+  const [sbi] = await db().insert(accounts).values({ name: "SBI", kind: "bank", openingBalancePaise: 1000000 }).returning();
+  const [cash] = await db().insert(accounts).values({ name: "Cash", kind: "cash", openingBalancePaise: 50000 }).returning();
+  await createTransactions([
+    { type: "expense", amount: 300, category: "Food", date: todayKey, accountId: sbi.id },
+    { type: "income", amount: 2000, category: "Salary", date: todayKey, accountId: sbi.id },
+    { type: "transfer", amount: 1000, category: "Transfer", date: todayKey, accountId: sbi.id, toAccountId: cash.id },
+  ]);
+  const accs = await MP.listAccounts();
+  assert.equal(accs.find((a) => a.id === sbi.id)!.balancePaise, 1000000 - 30000 + 200000 - 100000, "SBI balance");
+  assert.equal(accs.find((a) => a.id === cash.id)!.balancePaise, 50000 + 100000, "cash balance gets transfer");
+  const insAfter = await F.insights(todayKey.slice(0, 7));
+  assert.ok(!insAfter.byCategory.find((c) => c.category === "Transfer"), "transfers aren't spending");
+
+  const { favourites } = await import("../src/db");
+  const [fav] = await db().insert(favourites).values({ label: "Chai ₹20", payload: { type: "expense", amount: 20, category: "Food", note: "Chai", method: "cash" } }).returning();
+  const favTx = await MP.logFavourite(fav.id);
+  assert.equal(favTx!.amountPaise, 2000);
+  for (let i = 0; i < 3; i++) await createTransactions([{ type: "expense", amount: 40, category: "Transport", note: "Metro", date: todayKey }]);
+  const sug = await MP.suggestFavourites();
+  assert.ok(sug.find((x) => x.label.startsWith("Metro")), "frequent entry suggested as favourite");
+
+  const [arunDue] = await MP.createDues([{ person: "Arun", direction: "they_owe", amount: 600, note: "dinner" }]);
+  assert.ok(arunDue.reminderId, "collect reminder created");
+  const dl = await MP.listDues();
+  assert.equal(dl.theyOwe, 60000);
+  const txCount = (await F.listAllTransactions()).length;
+  await MP.settleDue(arunDue.id, { log: true });
+  assert.equal((await F.listAllTransactions()).length, txCount + 1, "settling logs income");
+  assert.equal((await MP.listDues()).theyOwe, 0);
+  assert.equal(await MP.settleDue(arunDue.id, { log: true }), null, "can't settle twice");
+
+  const { goals } = await import("../src/db");
+  const [goal] = await db().insert(goals).values({ name: "Goa", targetPaise: 5000000, deadline: `${Number(todayKey.slice(0, 4)) + 1}-03-01` }).returning();
+  await MP.addContribution(goal.id, 5000, null);
+  const g = (await MP.listGoals()).find((x) => x.id === goal.id)!;
+  assert.equal(g.savedPaise, 500000);
+  assert.ok(g.perMonthPaise && g.perMonthPaise > 0, "per-month amount");
+
+  const yr = await MP.yearInsights(Number(todayKey.slice(0, 4)));
+  assert.equal(yr.months.length, 12);
+  assert.ok(yr.spent > 0);
+
+  const { sendMonthlyReport } = await import("../src/lib/digest");
+  await sendMonthlyReport(new Date(new Date().getTime() + 31 * 86400000));
+  assert.match(sent.at(-1)!.subject, /📊/);
+
+  const P3 = await import("../src/lib/parse");
+  const sms = P3.parseLocally("Rs.450.00 debited from A/c XX1234 on 19-11-26 to VPA swiggy@icici UPI Ref 123456. Avl Bal Rs 12,000");
+  assert.equal(sms.transactions[0].amount, 450);
+  assert.equal(sms.transactions[0].merchant, "Swiggy");
+  const split = P3.parseLocally("Paid 1200 for dinner, Arun owes me 600");
+  assert.equal(split.transactions[0].amount, 1200);
+  assert.equal(split.dues![0].person, "Arun");
+
+  // Telegram photo when Gemini is down → friendly error, no crash.
+  process.env.GEMINI_API_KEY = "test";
+  await Set_.setSetting("telegram", { token: "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", chatId: 42 });
+  const realFetch2 = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).includes("/file/bot")) return new Response(new Uint8Array([1, 2, 3]));
+    if (String(url).includes("getFile")) return new Response(JSON.stringify({ ok: true, result: { file_path: "p.jpg", file_size: 3 } }));
+    return realFetch2(url as string, init);
+  }) as typeof fetch;
+  await call({ message: { message_id: 20, chat: { id: 42 }, photo: [{ file_id: "f1", width: 10, height: 10 }] } });
+  globalThis.fetch = realFetch2;
+  delete process.env.GEMINI_API_KEY;
+  assert.match(String(tgCalls.filter((c) => c.method === "sendMessage").at(-1)!.body.text), /Something went wrong|couldn/i);
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

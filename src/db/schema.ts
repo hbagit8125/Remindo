@@ -98,10 +98,68 @@ export const transactions = pgTable(
     /** Set when logged from a bill reminder. */
     reminderId: uuid("reminder_id").references(() => reminders.id, { onDelete: "set null" }),
     occurrenceAt: timestamp("occurrence_at", { withTimezone: true }),
+    /** Which account/wallet the money came from or went to (optional). */
+    accountId: uuid("account_id"),
+    /** For type "transfer": the account money moved into. */
+    toAccountId: uuid("to_account_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("transactions_date_idx").on(t.date), index("transactions_reminder_idx").on(t.reminderId, t.occurrenceAt)],
 );
+
+/** Bank accounts, cards, cash, wallets. Balance = opening + money in − money out. */
+export const accounts = pgTable("accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull().default("bank"), // bank | card | cash | wallet
+  openingBalancePaise: integer("opening_balance_paise").notNull().default(0),
+  archived: boolean("archived").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** One-tap entries like "Chai ₹20". payload is a TransactionInput without the date. */
+export const favourites = pgTable("favourites", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  label: text("label").notNull(),
+  payload: jsonb("payload").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Money owed between you and someone ("Arun owes 600"). */
+export const dues = pgTable("dues", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  person: text("person").notNull(),
+  direction: text("direction").notNull(), // they_owe | i_owe
+  amountPaise: integer("amount_paise").notNull(),
+  note: text("note"),
+  transactionId: uuid("transaction_id"),
+  reminderId: uuid("reminder_id"),
+  settledAt: timestamp("settled_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Savings goals and the money put towards them. */
+export const goals = pgTable("goals", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  emoji: text("emoji"),
+  targetPaise: integer("target_paise").notNull(),
+  deadline: text("deadline"),
+  archived: boolean("archived").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const goalContributions = pgTable("goal_contributions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  goalId: uuid("goal_id")
+    .notNull()
+    .references(() => goals.id, { onDelete: "cascade" }),
+  amountPaise: integer("amount_paise").notNull(),
+  date: text("date").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 /** Monthly budgets. category "__total__" is the overall limit. */
 export const budgets = pgTable(

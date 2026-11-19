@@ -7,6 +7,7 @@ import { AlertTriangle, ArrowRight, Bell, Sparkles, Star, Wallet } from "lucide-
 import { dayKey, fmt, greeting, useData, useHidden } from "@/components/app/client";
 import { Empty, QuickTask, ReminderItem, Section, SkeletonList, TaskItem, TxItem, useNow } from "@/components/app/rows";
 import { useSheet } from "@/components/app/AddSheet";
+import { FavouritesStrip } from "@/components/app/FavouritesStrip";
 import type { AgendaItem, FocusTask, Transaction } from "@/components/types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
 
@@ -103,6 +104,8 @@ export function HomeScreen() {
           )}
         </Link>
       </div>
+
+      <FavouritesStrip />
 
       {a.overdue.length > 0 && (
         <Link
