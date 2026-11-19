@@ -1,6 +1,7 @@
 import * as chrono from "chrono-node";
 import { z } from "zod";
 import { reminderInputSchema, type ReminderInput } from "./reminder-input";
+import { taskInputSchema, type TaskInput } from "./tasks";
 import {
   CATEGORY_KEYWORDS,
   DEFAULT_CATEGORIES,
@@ -13,16 +14,17 @@ import { fmtLocal, localNowContext, toFakeUtc } from "./time";
 const resultSchema = z.object({
   reminders: z.array(reminderInputSchema).max(20).default([]),
   transactions: z.array(transactionInputSchema).max(30).default([]),
+  tasks: z.array(taskInputSchema).max(30).default([]),
 });
 
-export type ParseResult = { reminders: ReminderInput[]; transactions: TransactionInput[] };
+export type ParseResult = { reminders: ReminderInput[]; transactions: TransactionInput[]; tasks: TaskInput[] };
 
 function systemPrompt(now = new Date()) {
   const ctx = localNowContext(now);
-  return `You are a personal assistant. You turn a short note (typed or spoken, Indian English, amounts in rupees) into REMINDERS and/or money TRANSACTIONS.
+  return `You are a personal assistant. You turn a short note (typed or spoken, Indian English or Malayalam, amounts in rupees) into REMINDERS, TASKS and/or money TRANSACTIONS.
 Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.
 
-Return ONLY JSON: {"reminders":[...], "transactions":[...]}. Either list may be empty.
+Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...]}. Any list may be empty.
 
 TRANSACTIONS = money that already moved: "spent", "paid", "bought", "got", "received", "credited", or a plain "<thing> <amount>" like "petrol 1200".
 Each transaction:
@@ -51,6 +53,16 @@ Each reminder:
   "category": one short word like "work","personal","health","finance","family","study", or null,
   "amount": rupees if it is a bill/payment to make (rent, EMI, subscription), else null,
   "leadTimes": minutes before to alert, e.g. "remind me 2 days early" -> [2880, 0]; null if not mentioned
+}
+
+TASKS = to-dos with no specific clock time: "buy milk", "finish the report by Friday", "todo: renew passport", "call the plumber sometime this week". If they give a clock time ("call mom at 7pm") it is a REMINDER instead. Bills, birthdays and other dated events stay REMINDERS.
+Each task:
+{
+  "title": short imperative title,
+  "notes": details or null,
+  "dueDate": "YYYY-MM-DD" if a day/deadline is mentioned ("by Friday", "tomorrow"), else null,
+  "focus": true if they say today / now / "today's list", else false,
+  "priority": "high" if urgent/important, "low" if someday/maybe, else "normal"
 }
 
 Rules: "Paid rent 15000, remind me next month" = one transaction AND one monthly reminder with amount. "Netflix 649 every month on the 12th" = a monthly reminder with amount 649 (not a transaction unless they say they paid). Birthdays are yearly. "Every weekday" = weekly MO-FR.`;
@@ -218,13 +230,51 @@ export function parseLocally(text: string, now = new Date()): ParseResult {
     .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b))/i)
     .map((p) => p.replace(/^(?:also|then|plus)\s+/i, "").trim())
     .filter((p) => p.length > 2);
-  const result: ParseResult = { reminders: [], transactions: [] };
+  const result: ParseResult = { reminders: [], transactions: [], tasks: [] };
   for (const part of parts.length ? parts : [text]) {
     const tx = parseTransactionLocally(part, now);
-    if (tx) result.transactions.push(tx);
+    if (tx) {
+      result.transactions.push(tx);
+      continue;
+    }
+    const task = parseTaskLocally(part, now);
+    if (task) result.tasks.push(task);
     else result.reminders.push(...parseReminderLocally(part, now));
   }
   return result;
+}
+
+/** "todo: buy milk", "add task finish report by friday", "buy milk" (no time) → task. */
+export function parseTaskLocally(text: string, now = new Date()): TaskInput | null {
+  const explicit = /^\s*(?:to-?do|task|add (?:a )?task|add to (?:my )?(?:list|tasks))\s*[:\-]?\s*/i;
+  const isExplicit = explicit.test(text);
+  const rest = text.replace(explicit, "").trim();
+  const offsetMin = Math.round((toFakeUtc(now).getTime() - now.getTime()) / 60000);
+  const found = chrono.parse(rest, { instant: now, timezone: offsetMin }, { forwardDate: true })[0];
+  const hasTime = Boolean(found?.start.isCertain("hour"));
+  // Plain errands with no clock time ("buy milk", "pick up laundry") are tasks too.
+  const errand = /^(?:buy|get|pick up|collect|finish|complete|clean|fix|book|order|send|email|write|read|study|renew|submit)\b/i.test(rest);
+  if (!isExplicit && (!errand || hasTime || /\b(every|daily|weekly|monthly|yearly|birthday)\b/i.test(rest))) return null;
+  if (hasTime) return null;
+  let title = rest;
+  let dueDate: string | null = null;
+  if (found) {
+    dueDate = fmtLocal(found.start.date(), "yyyy-MM-dd");
+    title = (rest.slice(0, found.index) + rest.slice(found.index + found.text.length)).replace(/\b(by|on|before)\s*$/i, "");
+  }
+  title = title
+    .replace(/\b(urgent|asap|important|today)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[,.\-\s]+|[,.\-\s]+$/g, "");
+  if (!title) return null;
+  const today = /\btoday\b/i.test(rest);
+  return taskInputSchema.parse({
+    title: title[0].toUpperCase() + title.slice(1),
+    dueDate,
+    focus: today,
+    priority: /\b(urgent|asap|important)\b/i.test(rest) ? "high" : "normal",
+  });
 }
 
 function parseReminderLocally(text: string, now: Date): ReminderInput[] {
@@ -295,7 +345,7 @@ export async function parsePrompt(text: string): Promise<ParseResult & { engine:
   const errors: string[] = [];
   const valid = (engine: string, raw: unknown) => {
     const parsed = resultSchema.safeParse(raw);
-    if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length)) return { ...parsed.data, engine };
+    if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length || parsed.data.tasks.length)) return { ...parsed.data, engine };
     throw new Error(parsed.success ? "nothing found" : parsed.error.issues[0]?.message);
   };
   const attempt = (engine: string, fn: () => Promise<unknown>) =>

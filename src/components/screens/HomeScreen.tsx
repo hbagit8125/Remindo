@@ -5,9 +5,9 @@ import { useMemo } from "react";
 import { clsx } from "clsx";
 import { AlertTriangle, ArrowRight, Bell, Sparkles, Star, Wallet } from "lucide-react";
 import { dayKey, fmt, greeting, useData, useHidden } from "@/components/app/client";
-import { Empty, ReminderItem, Section, SkeletonList, TxItem, useNow } from "@/components/app/rows";
+import { Empty, QuickTask, ReminderItem, Section, SkeletonList, TaskItem, TxItem, useNow } from "@/components/app/rows";
 import { useSheet } from "@/components/app/AddSheet";
-import type { AgendaItem, Transaction } from "@/components/types";
+import type { AgendaItem, FocusTask, Transaction } from "@/components/types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
 
 const OWNER = process.env.NEXT_PUBLIC_OWNER_NAME ?? "Hashir";
@@ -45,6 +45,9 @@ export function HomeScreen() {
   const agenda = useData<{ items: AgendaItem[] }>("/api/agenda?days=30");
   const money = useData<{ transactions: Transaction[] }>("/api/transactions");
   const budgets = useData<{ budgets: Record<string, number> }>("/api/budgets");
+  const taskData = useData<{ focus: FocusTask[] }>("/api/tasks");
+  const focus = (taskData.data?.focus || []).filter((t) => !hidden.has(t.id));
+  const focusLeft = focus.filter((t) => !t.done).length;
 
   const a = useMemo(() => splitAgenda(agenda.data?.items || [], now, hidden), [agenda.data, now, hidden]);
   const tx = (money.data?.transactions || []).filter((t) => !hidden.has(t.id));
@@ -55,7 +58,7 @@ export function HomeScreen() {
   const pendingToday = a.today.filter((i) => !i.done);
   const nextUp = [...a.overdue, ...pendingToday].slice(0, 6);
   const loading = agenda.loading || money.loading;
-  const brandNew = !loading && !agenda.data?.items.length && !tx.length;
+  const brandNew = !loading && !agenda.data?.items.length && !tx.length && !taskData.data?.focus.length;
 
   return (
     <div>
@@ -66,12 +69,14 @@ export function HomeScreen() {
 
       {/* Summary */}
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-3">
-        <Link href="/reminders" className="card rounded-3xl p-4 transition hover:bg-raised">
+        <Link href="/plan" className="card rounded-3xl p-4 transition hover:bg-raised">
           <div className="flex items-center gap-2 text-xs font-medium text-muted">
             <Bell className="h-4 w-4 text-indigo-500" /> Today
           </div>
-          <p className="mt-2 text-3xl font-semibold tabular-nums">{loading ? "–" : pendingToday.length}</p>
-          <p className="text-xs text-muted">{pendingToday.length === 1 ? "reminder left" : "reminders left"}</p>
+          <p className="mt-2 text-3xl font-semibold tabular-nums">{loading ? "–" : pendingToday.length + focusLeft}</p>
+          <p className="text-xs text-muted">
+            {pendingToday.length} reminder{pendingToday.length === 1 ? "" : "s"} · {focusLeft} task{focusLeft === 1 ? "" : "s"} left
+          </p>
         </Link>
         <Link href="/expenses" className="card rounded-3xl p-4 transition hover:bg-raised">
           <div className="flex items-center gap-2 text-xs font-medium text-muted">
@@ -101,7 +106,7 @@ export function HomeScreen() {
 
       {a.overdue.length > 0 && (
         <Link
-          href="/reminders"
+          href="/plan"
           className="mb-6 flex items-center gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-700 dark:text-rose-200"
         >
           <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -126,7 +131,14 @@ export function HomeScreen() {
       ) : (
         <div className="md:grid md:grid-cols-5 md:gap-6">
           <div className="md:col-span-3">
-            <Section title="Next up" right={<Link href="/reminders">See all</Link>}>
+            <Section title="Today's focus" right={<Link href="/plan?view=tasks">All tasks</Link>}>
+              {focus.map((t) => (
+                <TaskItem key={t.id} t={t} focused={Boolean(t.focusDate)} tag={t.carried ? "carried over" : undefined} />
+              ))}
+              <QuickTask />
+            </Section>
+
+            <Section title="Next up" right={<Link href="/plan">See all</Link>}>
               {loading ? (
                 <SkeletonList rows={3} />
               ) : nextUp.length ? (

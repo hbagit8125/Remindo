@@ -156,6 +156,27 @@ export const telegramDrafts = pgTable("telegram_drafts", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** To-dos without a time. focusDate puts a task in that day's "Today" focus list. */
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    notes: text("notes"),
+    /** Optional deadline, local YYYY-MM-DD. */
+    dueDate: text("due_date"),
+    /** Day the task was starred for focus, local YYYY-MM-DD. Unfinished ones carry over. */
+    focusDate: text("focus_date"),
+    priority: text("priority").notNull().default("normal"),
+    done: boolean("done").notNull().default(false),
+    doneAt: timestamp("done_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("tasks_done_idx").on(t.done), index("tasks_due_idx").on(t.dueDate)],
+);
+
 export type Reminder = typeof reminders.$inferSelect;
+export type Task = typeof tasks.$inferSelect;
 export type Transaction = typeof transactions.$inferSelect;
 export type Delivery = typeof deliveries.$inferSelect;

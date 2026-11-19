@@ -2,12 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Check, Clock, Repeat, Trash2, IndianRupee } from "lucide-react";
-import { api, dayKey, fmt, hideId, refreshAll, TZ, unhideId } from "./client";
+import { Check, Clock, Repeat, Trash2, IndianRupee, Star, CalendarDays, Plus } from "lucide-react";
+import { api, dayKey, fmt, hideId, refreshAll, relativeDay, TZ, unhideId } from "./client";
 import { useToast } from "./toast";
 import { useSheet } from "./AddSheet";
 import { SwipeRow } from "./SwipeRow";
-import { categoryMeta, METHOD_LABEL, type AgendaItem, type ReminderInput, type ReminderRow, type Transaction } from "../types";
+import { categoryMeta, METHOD_LABEL, type AgendaItem, type ReminderInput, type ReminderRow, type Task, type Transaction } from "../types";
 import { formatINR } from "@/lib/money";
 
 const DOT: Record<string, string> = { high: "bg-rose-500", normal: "bg-indigo-400", low: "bg-zinc-400" };
@@ -309,4 +309,131 @@ export function useNow() {
     return () => clearInterval(t);
   }, []);
   return now;
+}
+
+// ------------------------------------------------------------- tasks
+
+export function useTaskActions() {
+  const { toast, undoable } = useToast();
+  const { open } = useSheet();
+  const patch = (id: string, body: object) => api(`/api/tasks/${id}`, { method: "PATCH", json: body });
+  return {
+    async toggleDone(t: Task) {
+      await patch(t.id, { done: !t.done });
+      refreshAll();
+      if (!t.done) toast({ message: `“${t.title}” done ✓`, action: { label: "Undo", onClick: () => patch(t.id, { done: false }).then(refreshAll) } });
+    },
+    async toggleFocus(t: Task, focused: boolean) {
+      await patch(t.id, { focus: !focused });
+      refreshAll();
+      toast({ message: focused ? "Removed from today's focus" : "Added to today's focus ⭐" });
+    },
+    edit(t: Task, focused: boolean) {
+      open({ mode: "task", id: t.id, value: { title: t.title, notes: t.notes, dueDate: t.dueDate, priority: t.priority, focus: focused } });
+    },
+    remove(t: Task) {
+      hideId(t.id);
+      undoable(
+        "Task deleted",
+        () => api(`/api/tasks/${t.id}`, { method: "DELETE" }).then(refreshAll),
+        () => unhideId(t.id),
+      );
+    },
+  };
+}
+
+/** One to-do. `focused` = currently in today's focus list. */
+export function TaskItem({ t, focused, tag }: { t: Task; focused: boolean; tag?: string }) {
+  const a = useTaskActions();
+  const today = dayKey(new Date());
+  const overdue = !t.done && t.dueDate && t.dueDate < today;
+  return (
+    <SwipeRow
+      right={t.done ? undefined : { label: "Done", icon: <Check className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => a.toggleDone(t) }}
+      left={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => a.remove(t) }}
+    >
+      <div className={clsx("card group flex items-center gap-3 rounded-2xl px-3.5 py-3 transition hover:bg-raised", t.done && "opacity-55")}>
+        <button
+          onClick={() => a.toggleDone(t)}
+          aria-label={t.done ? "Mark not done" : "Mark done"}
+          className={clsx(
+            "grid h-6 w-6 shrink-0 place-items-center rounded-md border-2 transition",
+            t.done ? "border-emerald-500 bg-emerald-500 text-white" : "border-[var(--subtle)] hover:border-emerald-500 hover:bg-emerald-500/10",
+          )}
+        >
+          {t.done && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
+        </button>
+        <button onClick={() => a.edit(t, focused)} className="min-w-0 flex-1 text-left">
+          <p className={clsx("truncate font-medium", t.done && "line-through")}>
+            {t.priority === "high" && !t.done && <span className="mr-1 text-rose-500">!</span>}
+            {t.title}
+          </p>
+          {(t.dueDate || tag || t.notes) && (
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
+              {t.dueDate && (
+                <span className={clsx("flex items-center gap-1", overdue && "font-medium text-rose-500")}>
+                  <CalendarDays className="h-3 w-3" />
+                  {overdue ? `overdue · ${relativeDay(t.dueDate)}` : relativeDay(t.dueDate)}
+                </span>
+              )}
+              {tag && <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">{tag}</span>}
+              {t.notes && <span className="truncate">{t.notes}</span>}
+            </p>
+          )}
+        </button>
+        {!t.done && (
+          <button
+            onClick={() => a.toggleFocus(t, focused)}
+            aria-label={focused ? "Remove from today's focus" : "Add to today's focus"}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-lg hover:bg-raised"
+          >
+            <Star className={clsx("h-[18px] w-[18px]", focused ? "fill-amber-400 text-amber-400" : "text-subtle")} />
+          </button>
+        )}
+      </div>
+    </SwipeRow>
+  );
+}
+
+/** One-line "add a task" box used on Home and Plan. */
+export function QuickTask({ focus = true, placeholder = "Add a task for today…" }: { focus?: boolean; placeholder?: string }) {
+  const { toast } = useToast();
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function add() {
+    if (!title.trim()) return;
+    setBusy(true);
+    try {
+      await api("/api/tasks", { method: "POST", json: { items: [{ title: title.trim(), focus, priority: "normal" }] } });
+      setTitle("");
+      refreshAll();
+    } catch (e) {
+      toast({ message: (e as Error).message, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        add();
+      }}
+      className="flex items-center gap-2 rounded-2xl border border-dashed border-line px-3.5 py-2 focus-within:border-indigo-400"
+    >
+      <Plus className="h-4 w-4 shrink-0 text-subtle" />
+      <input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder={placeholder}
+        disabled={busy}
+        className="min-w-0 flex-1 bg-transparent py-1.5 text-[15px] outline-none placeholder:text-subtle"
+      />
+      {title && (
+        <button className="rounded-lg bg-indigo-500 px-3 py-1.5 text-xs font-semibold text-white" disabled={busy}>
+          Add
+        </button>
+      )}
+    </form>
+  );
 }

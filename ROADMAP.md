@@ -16,7 +16,7 @@ Ideas for growing Remindo into a full daily assistant. Everything here can stay 
 
 - [x] Simpler budget setup (card + bottom sheet)
 
-## In progress: Phase 1 (`feature/phase1-notifications`)
+## Phase 1 (shipped)
 - [x] Phone push notifications with Done / Snooze buttons
 - [x] Telegram bot: alerts with buttons, add by text or voice note (English / Malayalam), /today
 - [x] Quiet hours (push + Telegram only; email always arrives; "While you slept" in the morning digest)
@@ -24,8 +24,15 @@ Ideas for growing Remindo into a full daily assistant. Everything here can stay 
 - [x] Error alerts for failing jobs
 - [x] More tab with Settings; Insights moved under Money
 
+- [x] Speed: functions in Singapore; AI fallback chain with time limits (optional Claude backup)
+
+## In progress: Phase 2 (`feature/phase2-plan`)
+- [x] Tasks (to-dos without a time) + today's focus with carry-over
+- [x] Calendar (month/week) with reminders, tasks and daily spend
+- [x] Global search (reminders, tasks, money, amounts)
+- [x] Home-screen shortcuts (Android long-press)
+
 ## Agreed plan (one PR per phase)
-- **Phase 2, Plan your day:** tasks + today focus, calendar (week/month), global search, home-screen shortcuts
 - **Phase 3, Money+:** favourites, accounts/wallets, split & owe, savings goals, receipt scan, SMS share/forward/paste, monthly report, yearly view
 - **Phase 4, Assistant:** ask questions, edit by voice, Malayalam, pattern suggestions
 - **Phase 5, Life & notes:** documents/renewals, people, health/medicines, study, notes & lists

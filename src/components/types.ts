@@ -148,3 +148,25 @@ export function categoryMeta(c: string) {
 }
 
 export const METHOD_LABEL: Record<Method, string> = { upi: "UPI", card: "Card", cash: "Cash", bank: "Bank" };
+
+export type TaskInput = {
+  title: string;
+  notes?: string | null;
+  dueDate?: string | null;
+  focus: boolean;
+  priority: Priority;
+};
+
+export type Task = {
+  id: string;
+  title: string;
+  notes: string | null;
+  dueDate: string | null;
+  focusDate: string | null;
+  priority: Priority;
+  done: boolean;
+  doneAt: string | null;
+  createdAt: string;
+};
+
+export type FocusTask = Task & { carried: boolean; overdue: boolean };

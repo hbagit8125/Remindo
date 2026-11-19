@@ -2,18 +2,22 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Bell, Check, ChevronDown, Loader2, Mic, MicOff, Sparkles, Trash2, Wallet, X } from "lucide-react";
+import { Bell, Check, CheckSquare, ChevronDown, Loader2, Mic, MicOff, Sparkles, Star, Trash2, Wallet, X } from "lucide-react";
 import { api, dayKey, hideId, refreshAll, relativeDay, unhideId, useData } from "./client";
 import { useToast } from "./toast";
 import { ReminderEditor } from "./ReminderEditor";
 import { ExpenseEditor } from "./ExpenseEditor";
-import { categoryMeta, type ReminderInput, type TransactionInput } from "../types";
+import { TaskEditor } from "./TaskEditor";
+import { categoryMeta, type ReminderInput, type TaskInput, type TransactionInput } from "../types";
 import { formatINR } from "@/lib/money";
 
 type SheetState =
   | { mode: "ask" }
   | { mode: "reminder"; id?: string; value?: ReminderInput }
-  | { mode: "expense"; id?: string; value?: TransactionInput };
+  | { mode: "expense"; id?: string; value?: TransactionInput }
+  | { mode: "task"; id?: string; value?: TaskInput };
+
+export type SheetMode = SheetState["mode"];
 
 const SheetCtx = createContext<{ open: (s: SheetState) => void } | null>(null);
 
@@ -33,6 +37,10 @@ export function blankReminder(): ReminderInput {
     interval: 1,
     priority: "normal",
   };
+}
+
+export function blankTask(): TaskInput {
+  return { title: "", focus: true, priority: "normal", dueDate: null };
 }
 
 export function blankExpense(): TransactionInput {
@@ -72,6 +80,7 @@ export function SheetProvider({ children }: { children: React.ReactNode }) {
               {state.mode === "ask" && <AskPanel close={close} />}
               {state.mode === "reminder" && <ReminderPanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
               {state.mode === "expense" && <ExpensePanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
+              {state.mode === "task" && <TaskPanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
             </div>
           </div>
         </div>
@@ -85,12 +94,13 @@ function SheetHeader({ state, setState, close }: { state: SheetState; setState: 
   const tabs = [
     { mode: "ask" as const, label: "Ask", icon: Sparkles },
     { mode: "reminder" as const, label: "Reminder", icon: Bell },
+    { mode: "task" as const, label: "Task", icon: CheckSquare },
     { mode: "expense" as const, label: "Money", icon: Wallet },
   ];
   return (
     <div className="flex items-center gap-2 pb-3">
       {editing ? (
-        <h2 className="flex-1 text-lg font-semibold">{state.mode === "reminder" ? "Edit reminder" : "Edit entry"}</h2>
+        <h2 className="flex-1 text-lg font-semibold">{state.mode === "reminder" ? "Edit reminder" : state.mode === "task" ? "Edit task" : "Edit entry"}</h2>
       ) : (
         <div className="flex flex-1 gap-1 rounded-xl bg-raised p-1">
           {tabs.map((t) => (
@@ -98,11 +108,11 @@ function SheetHeader({ state, setState, close }: { state: SheetState; setState: 
               key={t.mode}
               onClick={() => setState({ mode: t.mode })}
               className={clsx(
-                "flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-medium transition",
+                "flex flex-1 items-center justify-center gap-1 rounded-lg py-2 text-[13px] font-medium transition sm:gap-1.5 sm:text-sm",
                 state.mode === t.mode ? "bg-surface text-fg shadow-sm ring-1 ring-line" : "text-muted hover:text-fg",
               )}
             >
-              <t.icon className="h-4 w-4" />
+              <t.icon className="h-4 w-4 shrink-0" />
               {t.label}
             </button>
           ))}
@@ -132,12 +142,16 @@ const EXAMPLES = [
   "Spent 450 on lunch at Zomato",
   "Petrol 1200 yesterday, card",
   "Call mom tomorrow at 7pm",
+  "Buy milk and eggs",
   "Paid rent 15000, remind me on the 5th next month",
   "Netflix 649 every month on the 12th",
   "Salary credited 85000",
 ];
 
-type Draft = { kind: "reminder"; value: ReminderInput } | { kind: "expense"; value: TransactionInput };
+type Draft =
+  | { kind: "reminder"; value: ReminderInput }
+  | { kind: "expense"; value: TransactionInput }
+  | { kind: "task"; value: TaskInput };
 
 function useSpeech(onFinal: (text: string) => void, onText: (text: string) => void) {
   const recRef = useRef<SpeechRec | null>(null);
@@ -201,12 +215,13 @@ function AskPanel({ close }: { close: () => void }) {
     setLoading(true);
     setNote("");
     try {
-      const r = await api<{ reminders: ReminderInput[]; transactions: TransactionInput[]; warning?: string }>("/api/parse", {
+      const r = await api<{ reminders: ReminderInput[]; transactions: TransactionInput[]; tasks: TaskInput[]; warning?: string }>("/api/parse", {
         method: "POST",
         json: { text: input },
       });
       setDrafts([
         ...r.transactions.map((value) => ({ kind: "expense" as const, value })),
+        ...(r.tasks || []).map((value) => ({ kind: "task" as const, value })),
         ...r.reminders.map((value) => ({ kind: "reminder" as const, value })),
       ]);
       setExpanded(null);
@@ -224,12 +239,15 @@ function AskPanel({ close }: { close: () => void }) {
     setSaving(true);
     const reminders = drafts.filter((d) => d.kind === "reminder").map((d) => d.value);
     const transactions = drafts.filter((d) => d.kind === "expense").map((d) => d.value);
+    const tasks = drafts.filter((d) => d.kind === "task").map((d) => d.value);
     try {
       if (transactions.some((t) => !(t as TransactionInput).amount)) throw new Error("Add an amount to each money entry");
       if (reminders.length) await api("/api/reminders", { method: "POST", json: { items: reminders } });
       if (transactions.length) await api("/api/transactions", { method: "POST", json: { items: transactions } });
+      if (tasks.length) await api("/api/tasks", { method: "POST", json: { items: tasks } });
       const parts = [
         reminders.length && `${reminders.length} reminder${reminders.length > 1 ? "s" : ""}`,
+        tasks.length && `${tasks.length} task${tasks.length > 1 ? "s" : ""}`,
         transactions.length && `${transactions.length} entr${transactions.length > 1 ? "ies" : "y"}`,
       ].filter(Boolean);
       toast({ message: `Added ${parts.join(" and ")}` });
@@ -318,6 +336,8 @@ function AskPanel({ close }: { close: () => void }) {
                 <div className="border-t border-line p-4">
                   {d.kind === "reminder" ? (
                     <ReminderEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "reminder", value: v } : x)))} />
+                  ) : d.kind === "task" ? (
+                    <TaskEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "task", value: v } : x)))} />
                   ) : (
                     <ExpenseEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "expense", value: v } : x)))} />
                   )}
@@ -345,6 +365,24 @@ function AskPanel({ close }: { close: () => void }) {
 }
 
 function DraftSummary({ d }: { d: Draft }) {
+  if (d.kind === "task") {
+    const v = d.value;
+    return (
+      <>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-amber-500/15 text-amber-500">
+          {v.focus ? <Star className="h-5 w-5 fill-amber-400" /> : <CheckSquare className="h-5 w-5" />}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-medium">{v.title}</span>
+          <span className="block text-xs text-muted">
+            Task{v.dueDate ? ` · due ${relativeDay(v.dueDate)}` : ""}
+            {v.focus ? " · today's focus" : ""}
+            {v.priority === "high" ? " · high" : ""}
+          </span>
+        </span>
+      </>
+    );
+  }
   if (d.kind === "expense") {
     const m = categoryMeta(d.value.category);
     const income = d.value.type === "income";
@@ -495,6 +533,46 @@ function ExpensePanel({ id, initial, close }: { id?: string; initial?: Transacti
       <ExpenseEditor value={value} onChange={setValue} extraCategories={extra} autoFocus={!id} />
       {err && <p className="mt-3 text-sm text-rose-500">{err}</p>}
       <PanelActions saving={saving} disabled={!value.amount || value.amount <= 0} onSave={save} onDelete={id ? remove : undefined} />
+    </>
+  );
+}
+
+function TaskPanel({ id, initial, close }: { id?: string; initial?: TaskInput; close: () => void }) {
+  const { toast, undoable } = useToast();
+  const [value, setValue] = useState<TaskInput>(initial || blankTask());
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    setSaving(true);
+    try {
+      if (id) await api(`/api/tasks/${id}`, { method: "PATCH", json: value });
+      else await api("/api/tasks", { method: "POST", json: { items: [value] } });
+      toast({ message: id ? "Task updated" : value.focus ? "Added to today's focus" : "Task added" });
+      refreshAll();
+      close();
+    } catch (e) {
+      setErr((e as Error).message);
+      setSaving(false);
+    }
+  }
+
+  function remove() {
+    if (!id) return;
+    close();
+    hideId(id);
+    undoable(
+      "Task deleted",
+      () => api(`/api/tasks/${id}`, { method: "DELETE" }).then(refreshAll),
+      () => unhideId(id),
+    );
+  }
+
+  return (
+    <>
+      <TaskEditor value={value} onChange={setValue} autoFocus={!id} />
+      {err && <p className="mt-3 text-sm text-rose-500">{err}</p>}
+      <PanelActions saving={saving} disabled={!value.title.trim()} onSave={save} onDelete={id ? remove : undefined} />
     </>
   );
 }

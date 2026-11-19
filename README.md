@@ -19,6 +19,12 @@ mark them done.
 - **Dashboard** with Today, Upcoming, Important and All tabs, an overdue banner, and edit, snooze and undo. It's installable on your phone as an app.
 - **Passcode-locked** single-user app.
 
+## Plan your day
+- **Plan tab:** Today (focus tasks + reminders + progress), Calendar (month/week, with daily spend), Tasks, Reminders.
+- **Tasks** are to-dos without a clock time: "Buy milk", "Finish report by Friday". Star one to put it in today's focus; unfinished focus tasks carry over to the next day. Add them from the ＋ sheet, by voice/AI, or on Telegram.
+- **Search** (🔍 or press `/`) across reminders, tasks and money, including amounts like `450`.
+- **Shortcuts:** long-press the installed app icon on Android for Add expense / task / reminder / Ask.
+
 ## Money tracking
 
 - **Same input for money:** type, speak or fill the form. The AI decides whether it's an expense, income, a reminder, or several of them.
