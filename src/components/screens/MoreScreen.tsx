@@ -86,8 +86,9 @@ function usePush() {
   const check = useCallback(async () => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return setState("unsupported");
     if (Notification.permission === "denied") return setState("blocked");
-    const reg = await navigator.serviceWorker.register("/sw.js");
-    const sub = await reg.pushManager.getSubscription();
+    const reg = await navigator.serviceWorker.register("/sw.js").catch(() => null);
+    if (!reg?.pushManager) return setState("unsupported");
+    const sub = await reg.pushManager.getSubscription().catch(() => null);
     setState(sub ? "on" : "off");
   }, []);
   useEffect(() => {

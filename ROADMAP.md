@@ -26,17 +26,17 @@ Ideas for growing Remindo into a full daily assistant. Everything here can stay 
 
 - [x] Speed: functions in Singapore; AI fallback chain with time limits (optional Claude backup)
 
-## In progress: Phase 2 (`feature/phase2-plan`)
+## Phase 2 (shipped)
 - [x] Tasks (to-dos without a time) + today's focus with carry-over
 - [x] Calendar (month/week) with reminders, tasks and daily spend
 - [x] Global search (reminders, tasks, money, amounts)
 - [x] Home-screen shortcuts (Android long-press)
 
-## Agreed plan (one PR per phase)
-- **Phase 3, Money+:** favourites, accounts/wallets, split & owe, savings goals, receipt scan, SMS share/forward/paste, monthly report, yearly view
-- **Phase 4, Assistant:** ask questions, edit by voice, Malayalam, pattern suggestions
-- **Phase 5, Life & notes:** documents/renewals, people, health/medicines, study, notes & lists
-- **Phase 6, Reliability:** offline support, weekly backup email, Home widgets
+## Phases 3–6 (`feature/phases-3-6`, needs migrations 0004 + 0005)
+- [x] **Money+:** favourites, accounts/wallets + transfers, split & owe, savings goals, receipt scan, bank SMS share/paste, monthly report, yearly view
+- [x] **Assistant:** ask questions, change things by voice/text with confirm, Malayalam mic, recurring-bill suggestions
+- [x] **Life & notes:** documents/renewals, people (birthdays/anniversaries), medicines with refill alerts, study deadlines, notes & lists
+- [x] **Reliability:** offline mode + sync, weekly backup email, customisable Home widgets
 
 ---
 
