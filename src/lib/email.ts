@@ -10,13 +10,16 @@ function resend() {
   return _resend;
 }
 
-export async function sendEmail(subject: string, html: string) {
+export type Attachment = { filename: string; content: string };
+
+export async function sendEmail(subject: string, html: string, attachments?: Attachment[]) {
   if (!config.notifyEmail) throw new Error("NOTIFY_EMAIL is not set");
   const { data, error } = await resend().emails.send({
     from: config.emailFrom,
     to: [config.notifyEmail],
     subject,
     html,
+    ...(attachments?.length ? { attachments: attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content, "utf8") })) } : {}),
   });
   if (error) throw new Error(`Resend: ${error.message}`);
   return data?.id;

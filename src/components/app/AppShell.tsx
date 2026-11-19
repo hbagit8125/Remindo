@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { AlarmClock, CalendarCheck, Home, LayoutGrid, LogOut, Moon, Plus, Search, Sun, Wallet } from "lucide-react";
+import { OfflineBanner } from "./OfflineBanner";
 import { SearchOverlay } from "./SearchOverlay";
 import type { SheetMode } from "./AddSheet";
 import { SheetProvider, useSheet } from "./AddSheet";
@@ -13,8 +14,8 @@ import { ToastProvider } from "./toast";
 const NAV = [
   { href: "/", label: "Home", icon: Home, match: ["/"] },
   { href: "/plan", label: "Plan", icon: CalendarCheck, match: ["/plan", "/reminders"] },
-  { href: "/expenses", label: "Money", icon: Wallet, match: ["/expenses", "/insights"] },
-  { href: "/more", label: "More", icon: LayoutGrid, match: ["/more"] },
+  { href: "/expenses", label: "Money", icon: Wallet, match: ["/expenses", "/insights", "/accounts", "/goals", "/dues"] },
+  { href: "/more", label: "More", icon: LayoutGrid, match: ["/more", "/life", "/lists"] },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -46,6 +47,8 @@ export function useTheme() {
 
 export async function logout() {
   await fetch("/api/auth/logout", { method: "POST" });
+  // Locked: don't leave your data readable in the offline cache.
+  if ("caches" in window) await caches.delete("remindo-v2").catch(() => null);
   window.location.href = "/login";
 }
 
@@ -87,11 +90,14 @@ function Frame({ children }: { children: React.ReactNode }) {
     const url = new URL(window.location.href);
     const add = url.searchParams.get("add") as SheetMode | "search" | null;
     if (!add) return;
+    const text = url.searchParams.get("text") || undefined;
     url.searchParams.delete("add");
+    url.searchParams.delete("text");
     window.history.replaceState(null, "", url.pathname + url.search);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of the launch URL
     if (add === "search") setSearchOpen(true);
-    else if (["ask", "reminder", "task", "expense"].includes(add)) open({ mode: add });
+    else if (add === "ask") open({ mode: "ask", text });
+    else if (["reminder", "task", "expense"].includes(add)) open({ mode: add as "reminder" | "task" | "expense" });
   }, [open]);
 
   return (
@@ -163,7 +169,10 @@ function Frame({ children }: { children: React.ReactNode }) {
           </span>
         </header>
 
-        <main className="mx-auto w-full max-w-3xl px-4 pb-32 pt-3 md:px-8 md:pb-12 md:pt-8">{children}</main>
+        <main className="mx-auto w-full max-w-3xl px-4 pb-32 pt-3 md:px-8 md:pb-12 md:pt-8">
+          <OfflineBanner />
+          {children}
+        </main>
       </div>
 
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}

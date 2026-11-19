@@ -1,7 +1,81 @@
-/* Remindo service worker: shows push notifications and handles their buttons. */
+/* Remindo service worker: offline cache, push notifications and their buttons. */
 
-self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+const CACHE = "remindo-v2";
+const STATIC = "remindo-static-v2";
+
+self.addEventListener("install", (event) => {
+  self.skipWaiting();
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((c) => c.addAll(["/", "/icon-192.png"]))
+      .catch(() => null),
+  );
+});
+
+self.addEventListener("activate", (event) =>
+  event.waitUntil(
+    caches
+      .keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== STATIC).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim()),
+  ),
+);
+
+// Never cache these: sign-in, background jobs, downloads, live AI.
+const NO_CACHE = /^\/api\/(auth|cron|deliver|sweep|telegram|push|action|backup|parse|scan|command|notify|transactions\/export)/;
+
+/** Page/RSC requests carry a random _rsc param; key them by path so offline navigation finds them. */
+function cacheKey(req) {
+  const url = new URL(req.url);
+  if (req.headers.get("RSC") === "1" || url.searchParams.has("_rsc")) {
+    url.searchParams.delete("_rsc");
+    return url.origin + url.pathname + url.search + (url.search ? "&" : "?") + "__rsc=1";
+  }
+  return req.url;
+}
+
+async function networkFirst(req, fallbackToHome) {
+  const key = cacheKey(req);
+  const cache = await caches.open(CACHE);
+  try {
+    const res = await fetch(req);
+    // Don't keep redirects (e.g. to /login) or errors.
+    if (res.ok && !res.redirected && res.type === "basic") cache.put(key, res.clone()).catch(() => null);
+    return res;
+  } catch (err) {
+    const hit = (await cache.match(key)) || (fallbackToHome ? await cache.match("/") : undefined);
+    if (hit) return hit;
+    throw err;
+  }
+}
+
+async function cacheFirst(req) {
+  const cache = await caches.open(STATIC);
+  const hit = await cache.match(req);
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (res.ok) cache.put(req, res.clone()).catch(() => null);
+  return res;
+}
+
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/_next/static/") || /\.(png|svg|ico|woff2?)$/.test(url.pathname)) {
+    event.respondWith(cacheFirst(req));
+    return;
+  }
+  if (url.pathname.startsWith("/api/")) {
+    if (NO_CACHE.test(url.pathname)) return;
+    event.respondWith(networkFirst(req, false));
+    return;
+  }
+  if (url.pathname === "/login" || url.pathname === "/share") return;
+  if (req.mode === "navigate" || req.headers.get("RSC") === "1") event.respondWith(networkFirst(req, req.mode === "navigate"));
+});
 
 self.addEventListener("push", (event) => {
   let data = {};

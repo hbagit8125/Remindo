@@ -1,14 +1,16 @@
 import { connection, NextResponse } from "next/server";
-import { desc, ne } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db, reminders } from "@/db";
 import { reminderInputSchema } from "@/lib/reminder-input";
 import { createReminders } from "@/lib/create";
 import { describeRrule } from "@/lib/recurrence";
 
-export async function GET() {
+export async function GET(req: Request) {
   await connection(); // always read fresh data, never prerender
-  const rows = await db().select().from(reminders).where(ne(reminders.status, "archived")).orderBy(desc(reminders.createdAt));
+  const category = new URL(req.url).searchParams.get("category");
+  const where = category ? and(ne(reminders.status, "archived"), eq(reminders.category, category)) : ne(reminders.status, "archived");
+  const rows = await db().select().from(reminders).where(where).orderBy(desc(reminders.createdAt));
   return NextResponse.json({
     reminders: rows.map((r) => ({ ...r, recurring: describeRrule(r.rrule) })),
   });

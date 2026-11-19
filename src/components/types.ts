@@ -19,13 +19,15 @@ export type ReminderInput = {
 };
 
 export type TransactionInput = {
-  type: "expense" | "income";
+  type: "expense" | "income" | "transfer";
   amount: number;
   category: string;
   note?: string | null;
   merchant?: string | null;
   method?: Method | null;
   date: string;
+  accountId?: string | null;
+  toAccountId?: string | null;
 };
 
 export type AgendaItem = {
@@ -61,7 +63,7 @@ export type ReminderRow = {
 
 export type Transaction = {
   id: string;
-  type: "expense" | "income";
+  type: "expense" | "income" | "transfer";
   amountPaise: number;
   category: string;
   note: string | null;
@@ -69,6 +71,8 @@ export type Transaction = {
   method: Method | null;
   date: string;
   reminderId: string | null;
+  accountId?: string | null;
+  toAccountId?: string | null;
   createdAt: string;
 };
 
@@ -170,3 +174,39 @@ export type Task = {
 };
 
 export type FocusTask = Task & { carried: boolean; overdue: boolean };
+
+export type AccountKind = "bank" | "card" | "cash" | "wallet";
+export type Account = { id: string; name: string; kind: AccountKind; openingBalancePaise: number; balancePaise: number };
+export const ACCOUNT_META: Record<AccountKind, { emoji: string; label: string }> = {
+  bank: { emoji: "🏦", label: "Bank" },
+  card: { emoji: "💳", label: "Card" },
+  cash: { emoji: "💵", label: "Cash" },
+  wallet: { emoji: "👛", label: "Wallet" },
+};
+
+export type Favourite = { id: string; label: string; payload: Omit<TransactionInput, "date"> };
+export type FavouriteSuggestion = { label: string; count: number; payload: Omit<TransactionInput, "date"> };
+
+export type DueInput = { person: string; direction: "they_owe" | "i_owe"; amount: number; note?: string | null; remindOn?: string | null };
+export type Due = { id: string; person: string; direction: "they_owe" | "i_owe"; amountPaise: number; note: string | null; settledAt: string | null; createdAt: string };
+
+export type Goal = {
+  id: string;
+  name: string;
+  emoji: string | null;
+  targetPaise: number;
+  deadline: string | null;
+  savedPaise: number;
+  savedThisMonthPaise: number;
+  perMonthPaise: number | null;
+  monthsLeft: number | null;
+};
+
+export type YearInsights = {
+  year: number;
+  months: { month: string; spent: number; income: number }[];
+  spent: number;
+  income: number;
+  topCategories: { category: string; total: number; months: number[] }[];
+  byCategory: { category: string; amount: number }[];
+};

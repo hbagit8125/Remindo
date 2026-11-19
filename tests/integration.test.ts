@@ -16,14 +16,14 @@ delete process.env.QSTASH_TOKEN;
 delete process.env.GEMINI_API_KEY;
 delete process.env.GROQ_API_KEY;
 
-const sent: { subject: string; html: string }[] = [];
+const sent: { subject: string; html: string; attachments?: { filename: string; content: unknown }[] }[] = [];
 const tgCalls: { method: string; body: Record<string, unknown> }[] = [];
 const aiCalls: string[] = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
   if (String(url).includes("api.resend.com")) {
     const b = JSON.parse(String(init?.body));
-    sent.push({ subject: b.subject, html: b.html });
+    sent.push({ subject: b.subject, html: b.html, attachments: b.attachments });
     return new Response(JSON.stringify({ id: `email_${sent.length}` }), { status: 200, headers: { "content-type": "application/json" } });
   }
   if (String(url).includes("generativelanguage.googleapis.com")) {
@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -338,6 +338,216 @@ async function main() {
   const ev2 = await sendEveningReview(new Date());
   void ev2;
   assert.match(sent.at(-1)!.html, /Tasks finished/);
+
+  // 12. Phase 3: accounts, transfers, favourites, dues, goals, year, monthly report, SMS.
+  const MP = await import("../src/lib/moneyplus");
+  const { accounts } = await import("../src/db");
+  const { createTransactions, createReminders } = await import("../src/lib/create");
+  const [sbi] = await db().insert(accounts).values({ name: "SBI", kind: "bank", openingBalancePaise: 1000000 }).returning();
+  const [cash] = await db().insert(accounts).values({ name: "Cash", kind: "cash", openingBalancePaise: 50000 }).returning();
+  await createTransactions([
+    { type: "expense", amount: 300, category: "Food", date: todayKey, accountId: sbi.id },
+    { type: "income", amount: 2000, category: "Salary", date: todayKey, accountId: sbi.id },
+    { type: "transfer", amount: 1000, category: "Transfer", date: todayKey, accountId: sbi.id, toAccountId: cash.id },
+  ]);
+  const accs = await MP.listAccounts();
+  assert.equal(accs.find((a) => a.id === sbi.id)!.balancePaise, 1000000 - 30000 + 200000 - 100000, "SBI balance");
+  assert.equal(accs.find((a) => a.id === cash.id)!.balancePaise, 50000 + 100000, "cash balance gets transfer");
+  const insAfter = await F.insights(todayKey.slice(0, 7));
+  assert.ok(!insAfter.byCategory.find((c) => c.category === "Transfer"), "transfers aren't spending");
+
+  const { favourites } = await import("../src/db");
+  const [fav] = await db().insert(favourites).values({ label: "Chai ₹20", payload: { type: "expense", amount: 20, category: "Food", note: "Chai", method: "cash" } }).returning();
+  const favTx = await MP.logFavourite(fav.id);
+  assert.equal(favTx!.amountPaise, 2000);
+  for (let i = 0; i < 3; i++) await createTransactions([{ type: "expense", amount: 40, category: "Transport", note: "Metro", date: todayKey }]);
+  const sug = await MP.suggestFavourites();
+  assert.ok(sug.find((x) => x.label.startsWith("Metro")), "frequent entry suggested as favourite");
+
+  const [arunDue] = await MP.createDues([{ person: "Arun", direction: "they_owe", amount: 600, note: "dinner" }]);
+  assert.ok(arunDue.reminderId, "collect reminder created");
+  const dl = await MP.listDues();
+  assert.equal(dl.theyOwe, 60000);
+  const txCount = (await F.listAllTransactions()).length;
+  await MP.settleDue(arunDue.id, { log: true });
+  assert.equal((await F.listAllTransactions()).length, txCount + 1, "settling logs income");
+  assert.equal((await MP.listDues()).theyOwe, 0);
+  assert.equal(await MP.settleDue(arunDue.id, { log: true }), null, "can't settle twice");
+
+  const { goals } = await import("../src/db");
+  const [goal] = await db().insert(goals).values({ name: "Goa", targetPaise: 5000000, deadline: `${Number(todayKey.slice(0, 4)) + 1}-03-01` }).returning();
+  await MP.addContribution(goal.id, 5000, null);
+  const g = (await MP.listGoals()).find((x) => x.id === goal.id)!;
+  assert.equal(g.savedPaise, 500000);
+  assert.ok(g.perMonthPaise && g.perMonthPaise > 0, "per-month amount");
+
+  const yr = await MP.yearInsights(Number(todayKey.slice(0, 4)));
+  assert.equal(yr.months.length, 12);
+  assert.ok(yr.spent > 0);
+
+  const { sendMonthlyReport } = await import("../src/lib/digest");
+  await sendMonthlyReport(new Date(new Date().getTime() + 31 * 86400000));
+  assert.match(sent.at(-1)!.subject, /📊/);
+
+  const P3 = await import("../src/lib/parse");
+  const sms = P3.parseLocally("Rs.450.00 debited from A/c XX1234 on 19-11-26 to VPA swiggy@icici UPI Ref 123456. Avl Bal Rs 12,000");
+  assert.equal(sms.transactions[0].amount, 450);
+  assert.equal(sms.transactions[0].merchant, "Swiggy");
+  const split = P3.parseLocally("Paid 1200 for dinner, Arun owes me 600");
+  assert.equal(split.transactions[0].amount, 1200);
+  assert.equal(split.dues![0].person, "Arun");
+
+  // Telegram photo when Gemini is down → friendly error, no crash.
+  process.env.GEMINI_API_KEY = "test";
+  await Set_.setSetting("telegram", { token: "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", chatId: 42 });
+  const realFetch2 = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).includes("/file/bot")) return new Response(new Uint8Array([1, 2, 3]));
+    if (String(url).includes("getFile")) return new Response(JSON.stringify({ ok: true, result: { file_path: "p.jpg", file_size: 3 } }));
+    return realFetch2(url as string, init);
+  }) as typeof fetch;
+  await call({ message: { message_id: 20, chat: { id: 42 }, photo: [{ file_id: "f1", width: 10, height: 10 }] } });
+  globalThis.fetch = realFetch2;
+  delete process.env.GEMINI_API_KEY;
+  assert.match(String(tgCalls.filter((c) => c.method === "sendMessage").at(-1)!.body.text), /Something went wrong|couldn/i);
+
+  // 13. Phase 4: questions, commands, suggestions.
+  const AS = await import("../src/lib/assistant");
+  const spendAns = await AS.answerQuestion({ kind: "spend", category: "Food" });
+  assert.match(spendAns.text, /You spent ₹/);
+  const agendaAns = await AS.answerQuestion({ kind: "agenda" });
+  assert.ok(agendaAns.text.length > 0);
+  await createReminders([{ title: "Dentist appointment", date: local(60 * 24 * 2).date, time: "10:00", recurrence: "none", interval: 1, priority: "normal" }]);
+  const { createReminders: _cr } = await import("../src/lib/create");
+  void _cr;
+  const findAns = await AS.answerQuestion({ kind: "find", keyword: "dentist" });
+  assert.match(findAns.text, /Dentist appointment: .*in 2 days|tomorrow|in 1 days/);
+  const cands = await AS.resolveCommand({ action: "reschedule", target: "dentist", date: local(60 * 24 * 5).date, time: "17:00" });
+  assert.equal(cands[0].title, "Dentist appointment");
+  const moveMsg = await AS.executeCommand({ action: "reschedule", kind: "reminder", id: cands[0].id, date: local(60 * 24 * 5).date, time: "17:00" });
+  assert.match(moveMsg, /Moved to/);
+  const moved = (await AS.answerQuestion({ kind: "find", keyword: "dentist" })).text;
+  assert.match(moved, /5:00 pm|in 5 days|in 4 days/);
+  const tcands = await AS.resolveCommand({ action: "complete", target: "guitar" });
+  assert.equal(tcands[0].kind, "task");
+  await AS.executeCommand({ action: "complete", kind: "task", id: tcands[0].id });
+  assert.equal((await AS.resolveCommand({ action: "complete", target: "guitar" })).length, 0, "done task no longer matches");
+  const dcands = await AS.resolveCommand({ action: "delete", target: "dentist" });
+  await AS.executeCommand({ action: "delete", kind: "reminder", id: dcands[0].id });
+  assert.equal((await AS.answerQuestion({ kind: "find", keyword: "dentist" })).text.startsWith("I couldn't"), true);
+
+  // Parse route returns answers/proposals (offline engine).
+  const parseRoute = await import("../src/app/api/parse/route");
+  const pr = await (await parseRoute.POST(new Request("https://x/api/parse", { method: "POST", body: JSON.stringify({ text: "who owes me money" }) }))).json();
+  assert.ok(pr.answer?.text, "answer returned");
+
+  // Suggestions: same bill in 2 months → monthly reminder suggestion.
+  const SG = await import("../src/lib/suggestions");
+  const m0 = local(0).date;
+  const prevMonth = F.shiftMonth(m0.slice(0, 7), -1);
+  const prev2 = F.shiftMonth(m0.slice(0, 7), -2);
+  await createTransactions([
+    { type: "expense", amount: 1450, category: "Bills", note: "KSEB electricity", date: `${prevMonth}-10` },
+    { type: "expense", amount: 1300, category: "Bills", note: "KSEB electricity", date: `${prev2}-11` },
+  ]);
+  const sugg = await SG.getSuggestions();
+  const billSug = sugg.find((x) => x.kind === "recurring_bill");
+  assert.ok(billSug, "recurring bill spotted");
+  await SG.acceptSuggestion(billSug!.key);
+  assert.ok(!(await SG.getSuggestions()).find((x) => x.key === billSug!.key), "accepted suggestion disappears");
+  const rem = (await AS.answerQuestion({ kind: "find", keyword: "KSEB" })).text;
+  assert.match(rem, /Pay KSEB electricity/);
+
+  // Telegram question → answered.
+  await call({ message: { message_id: 30, chat: { id: 42 }, text: "who owes me money" } });
+  assert.match(String(tgCalls.filter((c) => c.method === "sendMessage").at(-1)!.body.text), /💬/);
+  await call({ message: { message_id: 31, chat: { id: 42 }, text: "Delete the KSEB reminder" } });
+  const conf = tgCalls.filter((c) => c.method === "sendMessage").at(-1)!;
+  assert.match(String(conf.body.text), /Confirm/);
+  const doBtn = (conf.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0];
+  await call({ callback_query: { id: "cbx", data: doBtn.callback_data, from: { id: 42 }, message: { message_id: 32, chat: { id: 42 }, text: "Confirm" } } });
+  assert.ok((await AS.answerQuestion({ kind: "find", keyword: "KSEB" })).text.startsWith("I couldn't"), "Telegram-confirmed delete ran");
+
+  // ---------------------------------------------------------------- Phase 5: life
+  const L = await import("../src/lib/life");
+  const expiry = F.shiftMonth(local(0).date.slice(0, 7), 2) + "-15";
+  const doc = await L.saveDocument({ kind: "vehicle_insurance", name: "TEST Activa insurance", expiryDate: expiry, renewalCost: 1800 });
+  const [docR] = await db().select().from(reminders).where(eq(reminders.id, doc!.reminderId!));
+  assert.equal(docR.title, "Renew TEST Activa insurance");
+  assert.deepEqual(docR.leadTimes, [43200, 10080, 1440, 0]);
+  const renewed = await L.renewDocument(doc!.id, expiry.replace(/^\d{4}/, (y) => String(Number(y) + 1)), 1750);
+  assert.equal(renewed!.reminderId, doc!.reminderId, "same reminder reused on renew");
+  const [docR2] = await db().select().from(reminders).where(eq(reminders.id, doc!.reminderId!));
+  assert.ok(docR2.dueAt > docR.dueAt, "renewal moved the reminder");
+
+  // People: birthday → yearly reminder, nextDate handles Feb 29.
+  assert.match(L.nextDate("02-29", new Date("2027-03-01T00:00:00Z")), /^2028-02-29$/);
+  assert.equal(L.nextDate("02-29", new Date("2026-12-01T00:00:00Z")), "2027-02-28");
+  const person = await L.savePerson({ name: "TEST Ammu", birthday: "01-05", birthYear: 1998, giftIdeas: "Books" });
+  const [bR] = await db().select().from(reminders).where(eq(reminders.id, person!.birthdayReminderId!));
+  assert.equal(bR.rrule?.startsWith("FREQ=YEARLY"), true);
+  assert.match(bR.notes || "", /Books/);
+  const ppl = await L.listPeople();
+  assert.ok(ppl[0].daysToBirthday !== null && ppl[0].turning! > 20);
+  await L.savePerson({ name: "TEST Ammu", birthday: null }, person!.id);
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, person!.birthdayReminderId!))).length, 0, "birthday reminder removed");
+
+  // Medicines: completing a dose lowers stock; one refill alert at threshold.
+  const med = await L.saveMedicine({ name: "TEST Vit D", dose: "1 tab", times: ["21:00", "09:00"], stock: 4, perDose: 1, refillAt: 3 });
+  assert.deepEqual(med!.times, ["09:00", "21:00"]);
+  assert.equal(med!.reminderIds.length, 2);
+  const emailsMed = sent.length;
+  await S.completeOccurrence(med!.reminderIds[0], new Date());
+  const { medicines } = await import("../src/db");
+  let [m1] = await db().select().from(medicines).where(eq(medicines.id, med!.id));
+  assert.equal(m1.stock, 3);
+  assert.ok(m1.refillAlertSentAt, "refill alert flagged");
+  assert.equal(sent.length, emailsMed + 1, "refill email sent once");
+  await S.completeOccurrence(med!.reminderIds[1], new Date());
+  assert.equal(sent.length, emailsMed + 1, "no second refill email");
+  await L.refillMedicine(med!.id, 30);
+  [m1] = await db().select().from(medicines).where(eq(medicines.id, med!.id));
+  assert.equal(m1.stock, 32);
+  assert.equal(m1.refillAlertSentAt, null);
+  await L.deleteMedicine(med!.id);
+
+  // Lists: offline parser + addToList creates the list once.
+  const pl = parseLocally("add eggs, bread and milk to my shopping list");
+  assert.deepEqual(pl.listItems, [{ list: "shopping", items: ["Eggs", "Bread", "Milk"] }]);
+  const a1 = await L.addToList("shopping", ["Eggs", "Bread"]);
+  const a2 = await L.addToList("Shopping list", ["Milk"]);
+  assert.equal(a1.list.id, a2.list.id, "same list reused");
+  assert.equal(a1.list.emoji, "🛒");
+  const full = await L.getList(a1.list.id);
+  assert.equal(full!.items.length, 3);
+  await call({ message: { message_id: 40, chat: { id: 42 }, text: "add sunscreen to packing list" } });
+  const lmsg = tgCalls.filter((c) => c.method === "sendMessage").at(-1)!;
+  assert.match(String(lmsg.body.text), /📝 packing list: sunscreen/i);
+  const save = (lmsg.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0];
+  await call({ callback_query: { id: "cbl", data: save.callback_data, from: { id: 42 }, message: { message_id: 41, chat: { id: 42 }, text: "x" } } });
+  assert.ok((await L.allLists()).find((x) => x.name === "Packing" && x.total === 1), "Telegram list add saved");
+
+  // ---------------------------------------------------------------- Phase 6: backup, home layout
+  const B = await import("../src/lib/backup");
+  const dumpAll = await B.exportAll();
+  assert.ok(dumpAll.data.documents.length >= 1 && dumpAll.data.lists.length >= 2, "backup includes life data");
+  assert.ok(!("settings" in dumpAll.data) && !("pushSubscriptions" in dumpAll.data), "secrets left out");
+  await B.sendBackup();
+  const bmail = sent.at(-1)!;
+  assert.match(bmail.subject, /backup/);
+  assert.deepEqual(bmail.attachments?.map((a) => a.filename.replace(/\d{4}-\d{2}-\d{2}/, "D")), ["remindo-backup-D.json", "remindo-transactions-D.csv"]);
+  process.env.CRON_SECRET = "test-cron";
+  const weeklyCron = await import("../src/app/api/cron/weekly/route");
+  const wk = await (await weeklyCron.GET(new Request("https://x/api/cron/weekly", { headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }))).json();
+  assert.ok(wk.backup && wk.preview, "weekly cron runs preview + backup");
+  const HL = await import("../src/app/api/home-layout/route");
+  await HL.PUT(new Request("https://x", { method: "PUT", body: JSON.stringify({ widgets: [{ id: "spending", hidden: false }, { id: "summary", hidden: true }] }) }));
+  const { getSetting } = await import("../src/lib/settings");
+  assert.equal((await getSetting<{ id: string }[]>("homeWidgets"))![0].id, "spending");
+  const { mergeLayout } = await import("../src/components/app/HomeWidgets");
+  const merged = mergeLayout([{ id: "spending", hidden: false }, { id: "gone", hidden: false }]);
+  assert.equal(merged[0].id, "spending");
+  assert.ok(!merged.some((w) => w.id === "gone") && merged.some((w) => w.id === "life"), "unknown dropped, new widgets appended");
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

@@ -11,6 +11,7 @@ import { categoryMeta, type Insights } from "@/components/types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
 import { BudgetBar } from "./HomeScreen";
 import { MoneyTabs } from "@/components/app/MoneyTabs";
+import { YearView } from "./YearView";
 import { MonthSwitcher } from "./MoneyScreen";
 
 export function InsightsScreen() {
@@ -19,6 +20,7 @@ export function InsightsScreen() {
   // /insights?budget=1 (from Home) opens the budget sheet straight away.
   const params = useSearchParams();
   const [editing, setEditing] = useState(() => params.get("budget") === "1");
+  const [span, setSpan] = useState<"month" | "year">("month");
   const { data } = useData<Insights>(`/api/insights?month=${month}`);
 
   const change = data && data.prevSpent ? ((data.spent - data.prevSpent) / data.prevSpent) * 100 : null;
@@ -34,11 +36,20 @@ export function InsightsScreen() {
         }
       />
       <MoneyTabs />
-      <div className="mb-5">
-        <MonthSwitcher month={month} setMonth={setMonth} now={now} />
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-2">
+        {span === "month" ? <MonthSwitcher month={month} setMonth={setMonth} now={now} /> : <span />}
+        <div className="flex rounded-lg bg-raised p-0.5 text-xs font-medium">
+          {(["month", "year"] as const).map((x) => (
+            <button key={x} onClick={() => setSpan(x)} className={clsx("rounded-md px-3 py-1.5 capitalize", span === x ? "bg-surface shadow-sm ring-1 ring-line" : "text-muted")}>
+              {x}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {!data ? (
+      {span === "year" ? (
+        <YearView />
+      ) : !data ? (
         <div className="space-y-3">
           <div className="skeleton h-32 rounded-3xl" />
           <div className="skeleton h-64 rounded-3xl" />

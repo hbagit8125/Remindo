@@ -2,6 +2,9 @@ import * as chrono from "chrono-node";
 import { z } from "zod";
 import { reminderInputSchema, type ReminderInput } from "./reminder-input";
 import { taskInputSchema, type TaskInput } from "./tasks";
+import { dueInputSchema, type DueInput } from "./moneyplus";
+import { listAddSchema, type ListAdd } from "./life";
+import { commandSchema, questionSchema, type Command, type Question } from "./assistant";
 import {
   CATEGORY_KEYWORDS,
   DEFAULT_CATEGORIES,
@@ -15,16 +18,42 @@ const resultSchema = z.object({
   reminders: z.array(reminderInputSchema).max(20).default([]),
   transactions: z.array(transactionInputSchema).max(30).default([]),
   tasks: z.array(taskInputSchema).max(30).default([]),
+  dues: z.array(dueInputSchema).max(10).default([]),
+  listItems: z.array(listAddSchema).max(5).default([]),
+  question: questionSchema.nullish(),
+  commands: z.array(commandSchema).max(5).default([]),
 });
 
-export type ParseResult = { reminders: ReminderInput[]; transactions: TransactionInput[]; tasks: TaskInput[] };
+export type ParseResult = {
+  reminders: ReminderInput[];
+  transactions: TransactionInput[];
+  tasks: TaskInput[];
+  dues?: DueInput[];
+  listItems?: ListAdd[];
+  question?: Question | null;
+  commands?: Command[];
+};
+
+const hasContent = (d: z.infer<typeof resultSchema>) =>
+  Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.listItems.length || d.question || d.commands.length);
 
 function systemPrompt(now = new Date()) {
   const ctx = localNowContext(now);
   return `You are a personal assistant. You turn a short note (typed or spoken, Indian English or Malayalam, amounts in rupees) into REMINDERS, TASKS and/or money TRANSACTIONS.
 Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.
 
-Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...]}. Any list may be empty.
+Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "listItems":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
+
+QUESTIONS: if they are ASKING about their own data, return only "question" (everything else empty):
+{"kind": "spend" | "income" | "agenda" | "find" | "tasks" | "balance" | "goals" | "dues" | "budget",
+ "category": expense category if they name one (use the category list below) or null,
+ "keyword": shop/item words to filter on, or for "find" the thing to look up (e.g. "Ammu birthday"), or null,
+ "from": "YYYY-MM-DD" or null, "to": "YYYY-MM-DD" or null}
+Examples: "How much did I spend on food in October?" → spend, category Food, from/to = 1st–last of the most recent past October. "Spent on Swiggy last month?" → spend, keyword "Swiggy". "What's due this week?" → agenda (Mon–Sun of this week). "When is Ammu's birthday?" → find, keyword "Ammu birthday". "How much budget is left?" → budget. "Who owes me money?" → dues. "My balance?" → balance.
+
+COMMANDS: if they want to CHANGE something that already exists, return "commands":
+{"action": "complete" | "snooze" | "reschedule" | "delete" | "log_payment", "target": words naming the reminder/task, "date": "YYYY-MM-DD" or null, "time": "HH:mm" or null, "minutes": snooze minutes or null}
+Examples: "Move the dentist to Friday 5pm" → reschedule, target "dentist", date=Friday, time 17:00. "Mark rent as paid" → two commands: log_payment "rent" and complete "rent". "Snooze gym by 30 minutes" → snooze, 30. "Cancel the plumber reminder" → delete "plumber". "Mark buy milk done" → complete "buy milk".
 
 TRANSACTIONS = money that already moved: "spent", "paid", "bought", "got", "received", "credited", or a plain "<thing> <amount>" like "petrol 1200".
 Each transaction:
@@ -64,6 +93,15 @@ Each task:
   "focus": true if they say today / now / "today's list", else false,
   "priority": "high" if urgent/important, "low" if someday/maybe, else "normal"
 }
+
+DUES = money someone owes you or you owe someone: "Arun owes me 600", "I owe Priya 200".
+Each due: {"person": name, "direction": "they_owe" | "i_owe", "amount": rupees, "note": what for or null, "remindOn": "YYYY-MM-DD" if they say when to collect/pay, else null}
+"Paid 1200 for dinner, Arun owes 600" = one expense of 1200 AND one due (Arun, they_owe, 600, "dinner").
+
+LIST ITEMS = things to add to a named list (shopping, packing, ideas, movies…): "add eggs and bread to shopping list", "put sunscreen on the packing list".
+Each: {"list": list name without the word "list" (e.g. "shopping"), "items": ["Eggs", "Bread"]}. These are NOT tasks.
+
+BANK / UPI SMS: if the text looks like a bank SMS ("debited", "credited", "A/c XX1234", "UPI Ref", "Avl Bal"), make ONE transaction: debited/spent/sent = expense, credited/received = income; amount from "Rs"/"INR"; merchant from the payee/VPA/"at …" name in plain words (e.g. "swiggy@icici" → "Swiggy"); method "upi" for UPI, "card" for card; date from the SMS if present. Ignore the balance amount.
 
 Rules: "Paid rent 15000, remind me next month" = one transaction AND one monthly reminder with amount. "Netflix 649 every month on the 12th" = a monthly reminder with amount 649 (not a transaction unless they say they paid). Birthdays are yearly. "Every weekday" = weekly MO-FR.`;
 }
@@ -171,6 +209,51 @@ async function withGroq(text: string): Promise<unknown> {
 const AMOUNT_RE = /(?:₹|rs\.?|inr)?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|lakh|lakhs|l)?\b(?!\s*(?:am|pm|th|st|nd|rd|min|hour|day|week|month))/i;
 const MONEY_MOVED_RE = /\b(spent|spend|paid|pay(?:ed)?|bought|cost|got|received|credited|salary|refund)\b/i;
 
+/** Bank/UPI SMS → one transaction. Returns null if it doesn't look like a bank SMS. */
+export function parseBankSms(text: string, now = new Date()): TransactionInput | null {
+  if (!/\b(debited|credited|spent|sent|received)\b/i.test(text) || !/\b(a\/c|acct|account|upi|card|avl|bal|ref)\b/i.test(text)) return null;
+  const amt = text.match(/(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)/i);
+  if (!amt) return null;
+  const amount = Number(amt[1].replace(/,/g, ""));
+  if (!amount) return null;
+  const income = /\bcredited\b|\breceived\b/i.test(text) && !/\bdebited\b/i.test(text);
+  const vpa = text.match(/\b(?:to|from|vpa)\s+([a-z0-9._-]+)@[a-z]+/i)?.[1];
+  const at = text.match(
+    /\b(?:at|to|towards|from|info[:\s-]*)\s+(?!a\/c|ac\b|acct|account|your)([A-Za-z][A-Za-z0-9 &'-]{2,30}?)(?=\s+(?:on|via|ref|upi|avl|thru|by)\b|\s*[.,(]|$)/i,
+  )?.[1];
+  const raw = vpa || at || null;
+  const merchant = raw ? raw.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() : null;
+  const dm = text.match(/\b(\d{1,2})[-/ ](\d{1,2}|[A-Za-z]{3})[-/ ](\d{2,4})\b/);
+  let date = fmtLocal(now, "yyyy-MM-dd");
+  if (dm) {
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const mo = /^\d+$/.test(dm[2]) ? Number(dm[2]) : months.indexOf(dm[2].toLowerCase()) + 1;
+    const yr = dm[3].length === 2 ? 2000 + Number(dm[3]) : Number(dm[3]);
+    if (mo >= 1 && mo <= 12 && Number(dm[1]) <= 31) {
+      const cand = `${yr}-${String(mo).padStart(2, "0")}-${String(Number(dm[1])).padStart(2, "0")}`;
+      if (cand <= date) date = cand;
+    }
+  }
+  let category = "Other";
+  const hay = `${merchant || ""} ${text}`.toLowerCase();
+  for (const [re, cat] of CATEGORY_KEYWORDS) {
+    if (re.test(hay) && cat !== "Salary") {
+      category = cat;
+      break;
+    }
+  }
+  if (income) category = /salary/i.test(text) ? "Salary" : "Other";
+  return transactionInputSchema.parse({
+    type: income ? "income" : "expense",
+    amount,
+    category,
+    note: merchant ? (income ? `From ${merchant}` : merchant) : income ? "Money received" : "Bank debit",
+    merchant,
+    method: /\bupi\b/i.test(text) ? "upi" : /\bcard\b/i.test(text) ? "card" : "bank",
+    date,
+  });
+}
+
 /** No-AI fallback for money: "spent 450 on lunch", "petrol 1200 yesterday". */
 export function parseTransactionLocally(text: string, now = new Date()): TransactionInput | null {
   const lower = text.toLowerCase();
@@ -224,14 +307,122 @@ export function parseTransactionLocally(text: string, now = new Date()): Transac
 }
 
 /** No-AI fallback: chrono-node for the date, keywords for repetition and priority. */
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
+/** Simple date ranges in plain words: today, this week, last month, "in October". */
+function rangeFromText(t: string, now: Date): { from: string; to: string } | null {
+  const d = (x: Date) => fmtLocal(x, "yyyy-MM-dd");
+  const today = d(now);
+  const lower = t.toLowerCase();
+  if (/\btoday\b/.test(lower)) return { from: today, to: today };
+  if (/\byesterday\b/.test(lower)) {
+    const y = d(new Date(now.getTime() - 86400000));
+    return { from: y, to: y };
+  }
+  if (/\btomorrow\b/.test(lower)) {
+    const y = d(new Date(now.getTime() + 86400000));
+    return { from: y, to: y };
+  }
+  const dow = (Number(fmtLocal(now, "i")) + 6) % 7; // 0 = Monday
+  if (/\bthis week\b/.test(lower)) return { from: d(new Date(now.getTime() - dow * 86400000)), to: d(new Date(now.getTime() + (6 - dow) * 86400000)) };
+  if (/\blast week\b/.test(lower)) return { from: d(new Date(now.getTime() - (dow + 7) * 86400000)), to: d(new Date(now.getTime() - (dow + 1) * 86400000)) };
+  const [y, m] = today.split("-").map(Number);
+  const monthRange = (yy: number, mm: number) => ({
+    from: `${yy}-${String(mm).padStart(2, "0")}-01`,
+    to: `${yy}-${String(mm).padStart(2, "0")}-${String(new Date(Date.UTC(yy, mm, 0)).getUTCDate()).padStart(2, "0")}`,
+  });
+  if (/\blast month\b/.test(lower)) return m === 1 ? monthRange(y - 1, 12) : monthRange(y, m - 1);
+  if (/\bthis month\b/.test(lower)) return { from: `${today.slice(0, 7)}-01`, to: today };
+  const mi = MONTHS.findIndex((mn) => new RegExp(`\\b(${mn}|${mn.slice(0, 3)})\\b`).test(lower));
+  if (mi >= 0) return monthRange(mi + 1 > m ? y - 1 : y, mi + 1);
+  return null;
+}
+
+/** Offline understanding of questions and edit commands. */
+export function parseAssistantLocally(text: string, now = new Date()): { question?: Question; commands?: Command[] } | null {
+  const t = text.trim().replace(/[?!.]+$/, "");
+  const lower = t.toLowerCase();
+  const range = rangeFromText(t, now);
+
+  if (/^(how much|what did i spend|total spent|spent how much|how much have i spent)/.test(lower) || /\bhow much\b.*\b(spen[dt]|earn|receiv|got)/.test(lower)) {
+    const income = /\b(earn|earned|receiv|income|got paid|salary)\b/.test(lower);
+    let category: string | null = null;
+    for (const [re, cat] of CATEGORY_KEYWORDS) if (re.test(lower)) {
+      category = cat;
+      break;
+    }
+    if (/budget/.test(lower)) return { question: { kind: "budget" } };
+    const kw = !category ? lower.match(/\b(?:on|at)\s+([a-z][a-z ]{1,25}?)(?:\s+(?:in|this|last|today|yesterday)\b|$)/)?.[1] || null : null;
+    return { question: { kind: income ? "income" : "spend", category: income ? null : category, keyword: kw, from: range?.from, to: range?.to } };
+  }
+  if (/^(what('?s| is)? (due|on|up|coming|planned)|what do i have|anything (due|on)|my (schedule|agenda|plan))/.test(lower))
+    return { question: { kind: "agenda", from: range?.from, to: range?.to } };
+  const when = t.match(/^when(?:'s| is| does| do)?\s+(.+)$/i);
+  if (when) return { question: { kind: "find", keyword: when[1].replace(/\b(due|happen|coming up)\b/gi, "").trim() } };
+  if (/\b(balance|how much (money )?(do i have|is in))\b/.test(lower)) return { question: { kind: "balance" } };
+  if (/\b(budget)\b.*\b(left|remaining|status)|\bhow much (budget|left)\b/.test(lower)) return { question: { kind: "budget" } };
+  if (/\bwho owes|\bdo i owe|\bowes me\?|\bmy dues\b/.test(lower)) return { question: { kind: "dues" } };
+  if (/\b(my goals|savings goals?|goal progress)\b/.test(lower)) return { question: { kind: "goals" } };
+  if (/^(what are )?my (tasks|to-?dos?)\b|^(open|pending) tasks/.test(lower)) return { question: { kind: "tasks" } };
+
+  const paid = t.match(/^mark\s+(?:the\s+)?(.+?)\s+as\s+paid$/i);
+  if (paid) return { commands: [{ action: "log_payment", target: paid[1] }, { action: "complete", target: paid[1] }] };
+  const done = t.match(/^(?:mark|tick(?: off)?|complete|finish(?:ed)?)\s+(?:the\s+)?(.+?)(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$/i);
+  if (done && /^(mark|tick|complete|finish)/i.test(t)) return { commands: [{ action: "complete", target: done[1] }] };
+  const snooze = t.match(/^snooze\s+(?:the\s+)?(.+?)\s+(?:for|by)\s+(\d+)\s*(m|min|mins|minutes?|h|hrs?|hours?)$/i);
+  if (snooze) return { commands: [{ action: "snooze", target: snooze[1], minutes: Number(snooze[2]) * (/^h/i.test(snooze[3]) ? 60 : 1) }] };
+  const move = t.match(/^(?:move|reschedule|shift|postpone|change)\s+(?:the\s+)?(.+?)\s+to\s+(.+)$/i);
+  if (move) {
+    const offsetMin = Math.round((toFakeUtc(now).getTime() - now.getTime()) / 60000);
+    const when = chrono.parse(move[2], { instant: now, timezone: offsetMin }, { forwardDate: true })[0];
+    if (when) {
+      const dt = when.start.date();
+      return {
+        commands: [
+          {
+            action: "reschedule",
+            target: move[1],
+            date: when.start.isCertain("day") || when.start.isCertain("weekday") ? fmtLocal(dt, "yyyy-MM-dd") : null,
+            time: when.start.isCertain("hour") ? fmtLocal(dt, "HH:mm") : null,
+          },
+        ],
+      };
+    }
+  }
+  const del = t.match(/^(?:delete|remove|cancel)\s+(?:the\s+)?(.+?)(?:\s+(?:reminder|task))?$/i);
+  if (del) return { commands: [{ action: "delete", target: del[1] }] };
+  return null;
+}
+
 export function parseLocally(text: string, now = new Date()): ParseResult {
+  const asked = parseAssistantLocally(text, now);
+  if (asked) return { reminders: [], transactions: [], tasks: [], dues: [], question: asked.question || null, commands: asked.commands || [] };
+  const sms = parseBankSms(text, now);
+  if (sms) return { reminders: [], transactions: [sms], tasks: [], dues: [] };
   // "Call mom at 7, and spent 50 on tea" → handle each part separately.
   const parts = text
-    .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b))/i)
+    .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b)|,\s*(?=(?:\w+\s+owes\b|i\s+owe\b)))/i)
     .map((p) => p.replace(/^(?:also|then|plus)\s+/i, "").trim())
     .filter((p) => p.length > 2);
-  const result: ParseResult = { reminders: [], transactions: [], tasks: [] };
+  const result: ParseResult = { reminders: [], transactions: [], tasks: [], dues: [], listItems: [] };
   for (const part of parts.length ? parts : [text]) {
+    const li = part.match(/^\s*(?:add|put)\s+(.+?)\s+(?:to|on|in)\s+(?:my\s+|the\s+)?([\w ]{1,30}?)\s+list\s*$/i);
+    if (li) {
+      const items = li[1].split(/\s*(?:,|\band\b|&)\s*/i).map((x) => x.trim()).filter(Boolean).map((x) => x[0].toUpperCase() + x.slice(1));
+      result.listItems!.push({ list: li[2].trim(), items });
+      continue;
+    }
+    const owe = part.match(/^\s*(?:(\w[\w ]{0,30}?)\s+owes(?:\s+me)?|i\s+owe\s+(\w[\w ]{0,30}?))\s+(?:rs\.?|₹)?\s*([\d,]+)/i);
+    if (owe) {
+      result.dues!.push(
+        dueInputSchema.parse({
+          person: (owe[1] || owe[2]).trim().replace(/\b\w/g, (c) => c.toUpperCase()),
+          direction: owe[1] ? "they_owe" : "i_owe",
+          amount: Number(owe[3].replace(/,/g, "")),
+        }),
+      );
+      continue;
+    }
     const tx = parseTransactionLocally(part, now);
     if (tx) {
       result.transactions.push(tx);
@@ -345,7 +536,7 @@ export async function parsePrompt(text: string): Promise<ParseResult & { engine:
   const errors: string[] = [];
   const valid = (engine: string, raw: unknown) => {
     const parsed = resultSchema.safeParse(raw);
-    if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length || parsed.data.tasks.length)) return { ...parsed.data, engine };
+    if (parsed.success && hasContent(parsed.data)) return { ...parsed.data, engine };
     throw new Error(parsed.success ? "nothing found" : parsed.error.issues[0]?.message);
   };
   const attempt = (engine: string, fn: () => Promise<unknown>) =>
@@ -458,4 +649,42 @@ export async function transcribeAudio(audio: Buffer, mimeType = "audio/ogg"): Pr
     }
   }
   throw new Error(`Couldn't transcribe (${errors.join("; ") || "no AI key set"})`);
+}
+
+const scanSchema = z.object({ transactions: z.array(transactionInputSchema).max(5).default([]) });
+
+/** Read a receipt / UPI screenshot with Gemini vision. Returns expense drafts to confirm. */
+export async function scanReceipt(imageBase64: string, mimeType: string): Promise<{ transactions: TransactionInput[]; engine: string }> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error("GEMINI_API_KEY not set");
+  const ctx = localNowContext();
+  const prompt = `This is a photo of a bill/receipt or a screenshot of a UPI/bank payment. Today is ${ctx.date} (${ctx.tz}).
+Return ONLY JSON {"transactions":[{"type":"expense"|"income","amount":rupees (the final total paid, not subtotal),"category":one of ${DEFAULT_CATEGORIES.join(", ")},"note":short description,"merchant":shop/payee name or null,"method":"upi"|"card"|"cash"|"bank" or null,"date":"YYYY-MM-DD" (from the image, else today)}]}.
+Usually exactly one transaction. A payment *received* screenshot is income. If you can't read an amount, return {"transactions":[]}.`;
+  const errors: string[] = [];
+  for (const model of [GEMINI_PRIMARY(), GEMINI_BACKUP()]) {
+    try {
+      const res = await fetchWithTimeout(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": key },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
+            generationConfig: { responseMimeType: "application/json", temperature: 0 },
+          }),
+        },
+        20000,
+      );
+      if (!res.ok) throw new Error(`Gemini ${model} ${res.status}`);
+      const json = await res.json();
+      const out = json?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "").join("") || "";
+      const parsed = scanSchema.safeParse(extractJson(out));
+      if (parsed.success) return { transactions: parsed.data.transactions, engine: model };
+      errors.push(`${model}: bad output`);
+    } catch (e) {
+      errors.push((e as Error).message);
+    }
+  }
+  throw new Error(`Couldn't read the image (${errors.join("; ")})`);
 }

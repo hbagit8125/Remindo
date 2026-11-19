@@ -27,6 +27,8 @@ export function inputToTxRow(i: TransactionInput) {
     merchant: i.merchant || null,
     method: i.method || null,
     date: i.date,
+    accountId: i.accountId || null,
+    toAccountId: i.type === "transfer" ? i.toAccountId || null : null,
   };
 }
 

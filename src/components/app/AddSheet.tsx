@@ -2,17 +2,18 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Bell, Check, CheckSquare, ChevronDown, Loader2, Mic, MicOff, Sparkles, Star, Trash2, Wallet, X } from "lucide-react";
+import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, ListChecks, Loader2, Mic, MicOff, Sparkles, Star, Trash2, Wallet, X } from "lucide-react";
 import { api, dayKey, hideId, refreshAll, relativeDay, unhideId, useData } from "./client";
 import { useToast } from "./toast";
 import { ReminderEditor } from "./ReminderEditor";
 import { ExpenseEditor } from "./ExpenseEditor";
 import { TaskEditor } from "./TaskEditor";
-import { categoryMeta, type ReminderInput, type TaskInput, type TransactionInput } from "../types";
+import { categoryMeta, type DueInput, type Favourite, type FavouriteSuggestion, type ReminderInput, type TaskInput, type TransactionInput } from "../types";
+import { field, label } from "./ReminderEditor";
 import { formatINR } from "@/lib/money";
 
 type SheetState =
-  | { mode: "ask" }
+  | { mode: "ask"; text?: string }
   | { mode: "reminder"; id?: string; value?: ReminderInput }
   | { mode: "expense"; id?: string; value?: TransactionInput }
   | { mode: "task"; id?: string; value?: TaskInput };
@@ -77,7 +78,7 @@ export function SheetProvider({ children }: { children: React.ReactNode }) {
               <SheetHeader state={state} setState={setState} close={close} />
             </div>
             <div className="px-5 pb-6 pt-2">
-              {state.mode === "ask" && <AskPanel close={close} />}
+              {state.mode === "ask" && <AskPanel close={close} initialText={state.text} />}
               {state.mode === "reminder" && <ReminderPanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
               {state.mode === "expense" && <ExpensePanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
               {state.mode === "task" && <TaskPanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
@@ -138,7 +139,15 @@ type SpeechRec = {
   onerror: ((e: { error: string }) => void) | null;
 };
 
+type Candidate = { kind: "reminder" | "task"; id: string; title: string; occurrenceAt?: string; description: string };
+type Proposal = {
+  command: { action: string; target: string; date?: string | null; time?: string | null; minutes?: number | null };
+  candidates: Candidate[];
+};
+
 const EXAMPLES = [
+  "How much did I spend on food this month?",
+  "What's due this week?",
   "Spent 450 on lunch at Zomato",
   "Petrol 1200 yesterday, card",
   "Call mom tomorrow at 7pm",
@@ -148,12 +157,15 @@ const EXAMPLES = [
   "Salary credited 85000",
 ];
 
+type ListDraft = { list: string; items: string[] };
 type Draft =
+  | { kind: "list"; value: ListDraft }
+  | { kind: "due"; value: DueInput }
   | { kind: "reminder"; value: ReminderInput }
   | { kind: "expense"; value: TransactionInput }
   | { kind: "task"; value: TaskInput };
 
-function useSpeech(onFinal: (text: string) => void, onText: (text: string) => void) {
+function useSpeech(onFinal: (text: string) => void, onText: (text: string) => void, lang = "en-IN") {
   const recRef = useRef<SpeechRec | null>(null);
   const textRef = useRef("");
   const [listening, setListening] = useState(false);
@@ -196,31 +208,63 @@ function useSpeech(onFinal: (text: string) => void, onText: (text: string) => vo
     textRef.current = "";
     setError("");
     setListening(true);
+    rec.lang = lang;
     rec.start();
   };
   return { listening, supported, error, toggle };
 }
 
-function AskPanel({ close }: { close: () => void }) {
+function AskPanel({ close, initialText }: { close: () => void; initialText?: string }) {
   const { toast } = useToast();
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText || "");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [note, setNote] = useState("");
+  const [answer, setAnswer] = useState<{ text: string; lines?: string[] } | null>(null);
+  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [doneIds, setDoneIds] = useState<string[]>([]);
+  const [lang, setLang] = useState<"en-IN" | "ml-IN">(() => {
+    try {
+      return (localStorage.getItem("micLang") as "en-IN" | "ml-IN") || "en-IN";
+    } catch {
+      return "en-IN";
+    }
+  });
+  const switchLang = () => {
+    const next = lang === "en-IN" ? "ml-IN" : "en-IN";
+    setLang(next);
+    try {
+      localStorage.setItem("micLang", next);
+    } catch {}
+  };
 
   const parse = useCallback(async (input: string) => {
     if (!input.trim()) return;
     setLoading(true);
     setNote("");
     try {
-      const r = await api<{ reminders: ReminderInput[]; transactions: TransactionInput[]; tasks: TaskInput[]; warning?: string }>("/api/parse", {
+      const r = await api<{
+        reminders: ReminderInput[];
+        transactions: TransactionInput[];
+        tasks: TaskInput[];
+        dues?: DueInput[];
+        listItems?: ListDraft[];
+        warning?: string;
+        answer?: { text: string; lines?: string[] } | null;
+        proposals?: Proposal[];
+      }>("/api/parse", {
         method: "POST",
         json: { text: input },
       });
+      setAnswer(r.answer || null);
+      setProposals(r.proposals || []);
+      setDoneIds([]);
       setDrafts([
         ...r.transactions.map((value) => ({ kind: "expense" as const, value })),
+        ...(r.listItems || []).map((value) => ({ kind: "list" as const, value })),
+        ...(r.dues || []).map((value) => ({ kind: "due" as const, value })),
         ...(r.tasks || []).map((value) => ({ kind: "task" as const, value })),
         ...r.reminders.map((value) => ({ kind: "reminder" as const, value })),
       ]);
@@ -233,19 +277,48 @@ function AskPanel({ close }: { close: () => void }) {
     }
   }, []);
 
-  const speech = useSpeech(parse, setText);
+  const speech = useSpeech(parse, setText, lang);
+
+  async function runProposal(p: Proposal, c: Candidate) {
+    try {
+      const r = await api<{ message: string }>("/api/command", {
+        method: "POST",
+        json: { action: p.command.action, kind: c.kind, id: c.id, occurrenceAt: c.occurrenceAt, date: p.command.date, time: p.command.time, minutes: p.command.minutes },
+      });
+      setDoneIds((x) => [...x, `${p.command.action}:${c.id}`]);
+      toast({ message: r.message });
+      refreshAll();
+    } catch (e) {
+      toast({ message: (e as Error).message, tone: "error" });
+    }
+  }
+
+  // Opened from "Share → Remindo" (e.g. a bank SMS): understand it straight away.
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (initialText && !autoRan.current) {
+      autoRan.current = true;
+      parse(initialText);
+    }
+  }, [initialText, parse]);
 
   async function saveAll() {
     setSaving(true);
     const reminders = drafts.filter((d) => d.kind === "reminder").map((d) => d.value);
     const transactions = drafts.filter((d) => d.kind === "expense").map((d) => d.value);
     const tasks = drafts.filter((d) => d.kind === "task").map((d) => d.value);
+    const dues = drafts.filter((d) => d.kind === "due").map((d) => d.value);
+    const listAdds = drafts.filter((d) => d.kind === "list").map((d) => d.value as ListDraft);
     try {
       if (transactions.some((t) => !(t as TransactionInput).amount)) throw new Error("Add an amount to each money entry");
       if (reminders.length) await api("/api/reminders", { method: "POST", json: { items: reminders } });
       if (transactions.length) await api("/api/transactions", { method: "POST", json: { items: transactions } });
       if (tasks.length) await api("/api/tasks", { method: "POST", json: { items: tasks } });
+      if (dues.length) await api("/api/dues", { method: "POST", json: { items: dues } });
+      for (const l of listAdds) await api("/api/lists/add", { method: "POST", json: l });
       const parts = [
+        listAdds.length && `${listAdds.reduce((n, l) => n + l.items.length, 0)} list item${listAdds.reduce((n, l) => n + l.items.length, 0) > 1 ? "s" : ""}`,
+        dues.length && `${dues.length} due${dues.length > 1 ? "s" : ""}`,
         reminders.length && `${reminders.length} reminder${reminders.length > 1 ? "s" : ""}`,
         tasks.length && `${tasks.length} task${tasks.length > 1 ? "s" : ""}`,
         transactions.length && `${transactions.length} entr${transactions.length > 1 ? "ies" : "y"}`,
@@ -278,6 +351,7 @@ function AskPanel({ close }: { close: () => void }) {
           className="min-h-[56px] flex-1 resize-none rounded-2xl border border-line bg-raised px-4 py-3 text-[15px] text-fg outline-none placeholder:text-subtle focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20"
         />
         {speech.supported && (
+          <div className="flex flex-col items-center gap-1">
           <button
             onClick={speech.toggle}
             aria-label="Speak"
@@ -288,13 +362,65 @@ function AskPanel({ close }: { close: () => void }) {
           >
             {speech.listening ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
           </button>
+          <button onClick={switchLang} className="rounded-md px-1.5 text-[11px] font-semibold text-muted hover:text-fg" title="Voice language">
+            {lang === "en-IN" ? "EN" : "മല"}
+          </button>
+          </div>
         )}
       </div>
+
+      {answer && (
+        <div className="animate-pop mt-4 rounded-2xl border border-indigo-400/30 bg-indigo-500/10 p-4">
+          <p className="text-[15px] font-medium">💬 {answer.text}</p>
+          {answer.lines?.length ? (
+            <ul className="mt-2 space-y-1 text-sm text-muted">
+              {answer.lines.map((l, i) => (
+                <li key={i}>• {l}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      )}
+
+      {proposals.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {proposals.map((p, pi) =>
+            p.candidates.length ? (
+              p.candidates.map((c) => {
+                const done = doneIds.includes(`${p.command.action}:${c.id}`);
+                return (
+                  <div key={`${pi}-${c.id}`} className="card flex items-center gap-3 rounded-2xl p-3">
+                    <span className="min-w-0 flex-1 text-sm">{c.description}</span>
+                    <button
+                      disabled={done}
+                      onClick={() => runProposal(p, c)}
+                      className={clsx(
+                        "shrink-0 rounded-xl px-3 py-2 text-xs font-semibold",
+                        done ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" : "bg-fg text-[var(--bg)]",
+                      )}
+                    >
+                      {done ? "Done ✓" : "Do it"}
+                    </button>
+                  </div>
+                );
+              })
+            ) : (
+              <p key={pi} className="text-sm text-muted">
+                Couldn&apos;t find anything matching “{p.command.target}”.
+              </p>
+            ),
+          )}
+        </div>
+      )}
 
       {!drafts.length && (
         <>
           <button
-            onClick={() => parse(text)}
+            onClick={() => {
+              setAnswer(null);
+              setProposals([]);
+              parse(text);
+            }}
             disabled={loading || !text.trim()}
             className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-500 py-3.5 font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110 disabled:opacity-40"
           >
@@ -336,6 +462,10 @@ function AskPanel({ close }: { close: () => void }) {
                 <div className="border-t border-line p-4">
                   {d.kind === "reminder" ? (
                     <ReminderEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "reminder", value: v } : x)))} />
+                  ) : d.kind === "list" ? (
+                    <ListDraftEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "list", value: v } : x)))} />
+                  ) : d.kind === "due" ? (
+                    <DueEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "due", value: v } : x)))} />
                   ) : d.kind === "task" ? (
                     <TaskEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "task", value: v } : x)))} />
                   ) : (
@@ -364,7 +494,98 @@ function AskPanel({ close }: { close: () => void }) {
   );
 }
 
+function ListDraftEditor({ value, onChange }: { value: ListDraft; onChange: (v: ListDraft) => void }) {
+  return (
+    <div className="grid gap-3">
+      <div>
+        <label className={label}>List</label>
+        <input className={field} value={value.list} onChange={(e) => onChange({ ...value, list: e.target.value })} />
+      </div>
+      <div>
+        <label className={label}>Items (one per line)</label>
+        <textarea
+          rows={Math.max(2, value.items.length)}
+          className={field}
+          value={value.items.join("\n")}
+          onChange={(e) => onChange({ ...value, items: e.target.value.split("\n") })}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DueEditor({ value, onChange }: { value: DueInput; onChange: (v: DueInput) => void }) {
+  return (
+    <div className="grid gap-3">
+      <div className="flex rounded-xl bg-raised p-1">
+        {(
+          [
+            ["they_owe", "They owe me"],
+            ["i_owe", "I owe them"],
+          ] as const
+        ).map(([d, l]) => (
+          <button
+            key={d}
+            type="button"
+            onClick={() => onChange({ ...value, direction: d })}
+            className={clsx("flex-1 rounded-lg py-2 text-sm font-medium", value.direction === d ? "bg-surface shadow-sm ring-1 ring-line" : "text-muted")}
+          >
+            {l}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={label}>Person</label>
+          <input className={field} value={value.person} onChange={(e) => onChange({ ...value, person: e.target.value })} />
+        </div>
+        <div>
+          <label className={label}>Amount (₹)</label>
+          <input type="number" inputMode="decimal" className={field} value={value.amount || ""} onChange={(e) => onChange({ ...value, amount: Number(e.target.value) || 0 })} />
+        </div>
+      </div>
+      <div>
+        <label className={label}>For (optional)</label>
+        <input className={field} value={value.note || ""} onChange={(e) => onChange({ ...value, note: e.target.value || null })} />
+      </div>
+      <div>
+        <label className={label}>Remind me on (default: in 3 days)</label>
+        <input type="date" className={field} value={value.remindOn || ""} onChange={(e) => onChange({ ...value, remindOn: e.target.value || undefined })} />
+      </div>
+    </div>
+  );
+}
+
 function DraftSummary({ d }: { d: Draft }) {
+  if (d.kind === "list") {
+    const items = d.value.items.filter((x) => x.trim());
+    return (
+      <>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-teal-500/15 text-teal-500">
+          <ListChecks className="h-5 w-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-medium">{items.join(", ")}</span>
+          <span className="block text-xs text-muted">Add to {d.value.list} list</span>
+        </span>
+      </>
+    );
+  }
+  if (d.kind === "due") {
+    const v = d.value;
+    return (
+      <>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-sky-500/15 text-sky-500">
+          <Handshake className="h-5 w-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-medium">{v.direction === "they_owe" ? `${v.person} owes you` : `You owe ${v.person}`}</span>
+          <span className="block text-xs text-muted">Due{v.note ? ` · ${v.note}` : ""} · reminder in 3 days</span>
+        </span>
+        <span className="ml-auto shrink-0 font-semibold">{formatINR(Math.round((v.amount || 0) * 100))}</span>
+      </>
+    );
+  }
   if (d.kind === "task") {
     const v = d.value;
     return (
@@ -495,20 +716,114 @@ function ReminderPanel({ id, initial, close }: { id?: string; initial?: Reminder
   );
 }
 
+/** Shrink a photo to ≤1600px JPEG so it uploads fast and fits Gemini's limits. */
+async function imageToBase64(file: File): Promise<{ data: string; mime: string }> {
+  const img = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const url = canvas.toDataURL("image/jpeg", 0.85);
+  return { data: url.split(",")[1], mime: "image/jpeg" };
+}
+
+function QuickMoney({ onScanned }: { onScanned: (v: TransactionInput) => void }) {
+  const { toast } = useToast();
+  const { data } = useData<{ favourites: Favourite[]; suggestions: FavouriteSuggestion[] }>("/api/favourites");
+  const [scanning, setScanning] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function scan(file: File) {
+    setScanning(true);
+    try {
+      const img = await imageToBase64(file);
+      const r = await api<{ transactions: TransactionInput[] }>("/api/scan", { method: "POST", json: { image: img.data, mimeType: img.mime } });
+      onScanned(r.transactions[0]);
+      toast({ message: "Read the receipt. Check the details and save" });
+    } catch (e) {
+      toast({ message: (e as Error).message, tone: "error" });
+    } finally {
+      setScanning(false);
+    }
+  }
+  async function logFav(f: Favourite) {
+    await api(`/api/favourites/${f.id}`, { method: "POST" });
+    refreshAll();
+    toast({ message: `Logged ${f.label}` });
+  }
+  const favs = data?.favourites || [];
+  return (
+    <div className="mb-5 space-y-3">
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        disabled={scanning}
+        className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-line py-3 text-sm font-medium text-muted hover:border-indigo-400 hover:text-fg"
+      >
+        {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+        {scanning ? "Reading receipt…" : "Scan a bill or UPI screenshot"}
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) scan(f);
+          e.target.value = "";
+        }}
+      />
+      {favs.length > 0 && (
+        <div>
+          <p className="mb-1.5 text-xs font-medium text-muted">Favourites: tap to log instantly</p>
+          <div className="no-scrollbar -mx-5 flex gap-1.5 overflow-x-auto px-5">
+            {favs.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => logFav(f)}
+                className="flex shrink-0 items-center gap-1 rounded-full border border-line bg-raised px-3 py-1.5 text-sm hover:border-indigo-400"
+              >
+                {categoryMeta(f.payload.category).emoji} {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ExpensePanel({ id, initial, close }: { id?: string; initial?: TransactionInput; close: () => void }) {
   const { toast, undoable } = useToast();
   const [value, setValue] = useState<TransactionInput>(initial || blankExpense());
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [asFavourite, setAsFavourite] = useState(false);
   const { data } = useData<{ usedCategories: { category: string; type: string }[] }>("/api/transactions");
   const extra = (data?.usedCategories || []).filter((c) => c.type === value.type).map((c) => c.category);
 
   async function save() {
     setSaving(true);
     try {
+      if (value.type === "transfer" && (!value.accountId || !value.toAccountId)) throw new Error("Pick both accounts for a transfer");
       if (id) await api(`/api/transactions/${id}`, { method: "PATCH", json: value });
       else await api("/api/transactions", { method: "POST", json: { items: [value] } });
-      toast({ message: id ? "Entry updated" : `${value.type === "income" ? "Income" : "Expense"} added · ${formatINR(Math.round(value.amount * 100))}` });
+      if (asFavourite && !id) {
+        const { date: _date, ...payload } = value;
+        void _date;
+        await api("/api/favourites", {
+          method: "POST",
+          json: { label: `${value.note || value.category} ₹${value.amount}`, payload },
+        });
+      }
+      toast({
+        message: id
+          ? "Entry updated"
+          : `${value.type === "income" ? "Income" : value.type === "transfer" ? "Transfer" : "Expense"} added · ${formatINR(Math.round(value.amount * 100))}`,
+      });
       refreshAll();
       close();
     } catch (e) {
@@ -530,7 +845,14 @@ function ExpensePanel({ id, initial, close }: { id?: string; initial?: Transacti
 
   return (
     <>
+      {!id && <QuickMoney onScanned={(v) => setValue({ ...blankExpense(), ...v })} />}
       <ExpenseEditor value={value} onChange={setValue} extraCategories={extra} autoFocus={!id} />
+      {!id && value.type !== "transfer" && (
+        <label className="mt-4 flex items-center gap-2 text-sm text-muted">
+          <input type="checkbox" checked={asFavourite} onChange={(e) => setAsFavourite(e.target.checked)} className="h-4 w-4 accent-indigo-500" />
+          Also save as a one-tap favourite
+        </label>
+      )}
       {err && <p className="mt-3 text-sm text-rose-500">{err}</p>}
       <PanelActions saving={saving} disabled={!value.amount || value.amount <= 0} onSave={save} onDelete={id ? remove : undefined} />
     </>

@@ -33,6 +33,8 @@ export const reminders = pgTable(
     version: integer("version").notNull().default(1),
     /** The editable input the reminder was built from. */
     input: jsonb("input"),
+    /** Link to what created it, e.g. { kind: "medicine", id } so taking a dose lowers the stock. */
+    meta: jsonb("meta"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -98,10 +100,68 @@ export const transactions = pgTable(
     /** Set when logged from a bill reminder. */
     reminderId: uuid("reminder_id").references(() => reminders.id, { onDelete: "set null" }),
     occurrenceAt: timestamp("occurrence_at", { withTimezone: true }),
+    /** Which account/wallet the money came from or went to (optional). */
+    accountId: uuid("account_id"),
+    /** For type "transfer": the account money moved into. */
+    toAccountId: uuid("to_account_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("transactions_date_idx").on(t.date), index("transactions_reminder_idx").on(t.reminderId, t.occurrenceAt)],
 );
+
+/** Bank accounts, cards, cash, wallets. Balance = opening + money in − money out. */
+export const accounts = pgTable("accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull().default("bank"), // bank | card | cash | wallet
+  openingBalancePaise: integer("opening_balance_paise").notNull().default(0),
+  archived: boolean("archived").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** One-tap entries like "Chai ₹20". payload is a TransactionInput without the date. */
+export const favourites = pgTable("favourites", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  label: text("label").notNull(),
+  payload: jsonb("payload").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Money owed between you and someone ("Arun owes 600"). */
+export const dues = pgTable("dues", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  person: text("person").notNull(),
+  direction: text("direction").notNull(), // they_owe | i_owe
+  amountPaise: integer("amount_paise").notNull(),
+  note: text("note"),
+  transactionId: uuid("transaction_id"),
+  reminderId: uuid("reminder_id"),
+  settledAt: timestamp("settled_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Savings goals and the money put towards them. */
+export const goals = pgTable("goals", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  emoji: text("emoji"),
+  targetPaise: integer("target_paise").notNull(),
+  deadline: text("deadline"),
+  archived: boolean("archived").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const goalContributions = pgTable("goal_contributions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  goalId: uuid("goal_id")
+    .notNull()
+    .references(() => goals.id, { onDelete: "cascade" }),
+  amountPaise: integer("amount_paise").notNull(),
+  date: text("date").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 /** Monthly budgets. category "__total__" is the overall limit. */
 export const budgets = pgTable(
@@ -180,3 +240,75 @@ export type Reminder = typeof reminders.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type Transaction = typeof transactions.$inferSelect;
 export type Delivery = typeof deliveries.$inferSelect;
+
+/** Things that expire: insurance, PUC, licence, passport… Each has a linked renewal reminder. */
+export const documents = pgTable("documents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  kind: text("kind").notNull().default("other"),
+  name: text("name").notNull(),
+  number: text("number"),
+  expiryDate: text("expiry_date").notNull(),
+  renewalCostPaise: integer("renewal_cost_paise"),
+  notes: text("notes"),
+  reminderId: uuid("reminder_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** People you care about: birthdays, anniversaries, gift ideas. Dates are "MM-DD". */
+export const people = pgTable("people", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  relation: text("relation"),
+  birthday: text("birthday"),
+  birthYear: integer("birth_year"),
+  anniversary: text("anniversary"),
+  giftBudgetPaise: integer("gift_budget_paise"),
+  giftIdeas: text("gift_ideas"),
+  notes: text("notes"),
+  birthdayReminderId: uuid("birthday_reminder_id"),
+  anniversaryReminderId: uuid("anniversary_reminder_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Medicines with dose times and a tablet count that drops as you take doses. */
+export const medicines = pgTable("medicines", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  dose: text("dose"),
+  times: text("times").array().notNull().default([]),
+  stock: integer("stock"),
+  perDose: integer("per_dose").notNull().default(1),
+  refillAt: integer("refill_at").notNull().default(5),
+  refillAlertSentAt: timestamp("refill_alert_sent_at", { withTimezone: true }),
+  reminderIds: uuid("reminder_ids").array().notNull().default([]),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Checklists (shopping, packing) and free-text notes. */
+export const lists = pgTable("lists", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  emoji: text("emoji"),
+  kind: text("kind").notNull().default("list"), // list | note
+  body: text("body"),
+  pinned: boolean("pinned").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const listItems = pgTable(
+  "list_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listId: uuid("list_id")
+      .notNull()
+      .references(() => lists.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    done: boolean("done").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("list_items_list_idx").on(t.listId)],
+);

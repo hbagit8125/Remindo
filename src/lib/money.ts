@@ -22,18 +22,23 @@ export const DEFAULT_CATEGORIES = [
 export const INCOME_CATEGORIES = ["Salary", "Freelance", "Refund", "Interest", "Gift", "Other"] as const;
 
 export const METHODS = ["upi", "card", "cash", "bank"] as const;
+export const ACCOUNT_KINDS = ["bank", "card", "cash", "wallet"] as const;
 
 export const TOTAL_BUDGET = "__total__";
 
 /** Editable shape of an expense or income entry. `amount` is in rupees. */
 export const transactionInputSchema = z.object({
-  type: z.enum(["expense", "income"]).default("expense"),
+  type: z.enum(["expense", "income", "transfer"]).default("expense"),
   amount: z.coerce.number().positive().max(100_000_000),
   category: z.string().trim().min(1).max(40).default("Other"),
   note: z.string().trim().max(500).nullish(),
   merchant: z.string().trim().max(100).nullish(),
   method: z.enum(METHODS).nullish(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+  /** Account/wallet id (optional). For transfers: the "from" account. */
+  accountId: z.string().uuid().nullish(),
+  /** Transfers only: the account receiving the money. */
+  toAccountId: z.string().uuid().nullish(),
 });
 
 export type TransactionInput = z.infer<typeof transactionInputSchema>;

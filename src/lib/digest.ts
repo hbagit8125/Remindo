@@ -1,5 +1,5 @@
 import { agenda, type AgendaItem } from "./scheduler";
-import { digestSection, layout, sendEmail, type DigestItem } from "./email";
+import { digestSection, esc, layout, sendEmail, type DigestItem } from "./email";
 import { fmtLocal, localDayBounds } from "./time";
 import { digestSpending, weeklySpending, listTransactions } from "./finance";
 import { and, eq, gte } from "drizzle-orm";
@@ -145,4 +145,55 @@ export async function sendEveningReview(now = new Date()) {
     ].join("\n"),
   ).catch(() => null);
   return { done: doneCount, carried: carried.length, tomorrow: next.length, spent };
+}
+
+/** 1st of the month: last month's totals, top categories, biggest expense, goals and dues. */
+export async function sendMonthlyReport(now = new Date()) {
+  const { monthlyReportData } = await import("./moneyplus");
+  const { shiftMonth } = await import("./finance");
+  const month = shiftMonth(fmtLocal(now, "yyyy-MM"), -1);
+  const r = await monthlyReportData(month);
+  const label = fmtLocal(new Date(`${month}-15T12:00:00Z`), "MMMM yyyy");
+  const change = r.previous.spent ? Math.round(((r.current.spent - r.previous.spent) / r.previous.spent) * 100) : null;
+  const saved = r.current.income - r.current.spent;
+  const row = (l: string, v: string, color = "#111827") =>
+    `<tr><td style="padding:6px 0;color:#6b7280;font-size:14px">${l}</td><td style="text-align:right;font-weight:600;font-size:14px;color:${color}">${v}</td></tr>`;
+  const body =
+    `<table style="width:100%;border-collapse:collapse">
+      ${row("Spent", formatINR(r.current.spent))}
+      ${r.current.income ? row("Income", formatINR(r.current.income), "#059669") : ""}
+      ${r.current.income ? row(saved >= 0 ? "Saved" : "Overspent", formatINR(Math.abs(saved)), saved >= 0 ? "#059669" : "#e11d48") : ""}
+      ${change !== null ? row("vs previous month", `${change > 0 ? "▲" : "▼"} ${Math.abs(change)}%`, change > 0 ? "#e11d48" : "#059669") : ""}
+    </table>` +
+    digestSection(
+      "Top categories",
+      r.current.byCategory.slice(0, 5).map((c) => ({
+        title: c.category,
+        when: `${formatINR(c.amount)} · ${Math.round((c.amount / Math.max(1, r.current.spent)) * 100)}%`,
+        priority: "normal",
+      })),
+      "No spending logged.",
+    ) +
+    (r.biggest
+      ? `<h2 style="font-size:14px;margin:20px 0 4px;color:#374151">Biggest expense</h2><p style="font-size:14px;margin:0">${esc(r.biggest.note || r.biggest.category)} · <b>${formatINR(r.biggest.amountPaise)}</b> on ${fmtLocal(new Date(`${r.biggest.date}T12:00:00Z`), "d MMM")}</p>`
+      : "") +
+    digestSection(
+      "Savings goals",
+      r.goals.map((g) => ({
+        title: `${g.emoji || "🎯"} ${g.name}`,
+        when: `${formatINR(g.savedPaise)} of ${formatINR(g.targetPaise)}${g.perMonthPaise ? ` · ${formatINR(g.perMonthPaise)}/mo to go` : ""}`,
+        priority: "normal",
+      })),
+    ) +
+    (r.dues.theyOwe || r.dues.iOwe
+      ? `<h2 style="font-size:14px;margin:20px 0 4px;color:#374151">Dues</h2><p style="font-size:14px;margin:0">${r.dues.theyOwe ? `Others owe you <b>${formatINR(r.dues.theyOwe)}</b>. ` : ""}${r.dues.iOwe ? `You owe <b>${formatINR(r.dues.iOwe)}</b>.` : ""}</p>`
+      : "");
+  await sendEmail(`📊 ${label}: ${formatINR(r.current.spent)} spent${change !== null ? ` (${change > 0 ? "+" : ""}${change}%)` : ""}`, layout(`Your ${label} report`, body));
+  await sendTelegram(
+    [
+      `📊 <b>${label}</b>: ${formatINR(r.current.spent)} spent${r.current.income ? `, ${formatINR(r.current.income)} in` : ""}${change !== null ? ` (${change > 0 ? "+" : ""}${change}% vs previous)` : ""}.`,
+      ...r.current.byCategory.slice(0, 3).map((c) => `• ${h(c.category)}: ${formatINR(c.amount)}`),
+    ].join("\n"),
+  ).catch(() => null);
+  return { month, spent: r.current.spent };
 }

@@ -17,13 +17,14 @@ import {
 } from "lucide-react";
 import { api, useData } from "@/components/app/client";
 import { PageTitle } from "@/components/app/rows";
+import { LifeTiles } from "@/components/screens/LifeScreens";
 import { useToast } from "@/components/app/toast";
 import { logout, useTheme } from "@/components/app/AppShell";
 
 type Prefs = {
   channels: { email: boolean; push: boolean; telegram: boolean };
   quietHours: { enabled: boolean; start: string; end: string };
-  emails: { morning: boolean; evening: boolean; weekly: boolean; monthly: boolean };
+  emails: { morning: boolean; evening: boolean; weekly: boolean; monthly: boolean; backup: boolean };
 };
 type SettingsRes = {
   prefs: Prefs;
@@ -85,8 +86,9 @@ function usePush() {
   const check = useCallback(async () => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return setState("unsupported");
     if (Notification.permission === "denied") return setState("blocked");
-    const reg = await navigator.serviceWorker.register("/sw.js");
-    const sub = await reg.pushManager.getSubscription();
+    const reg = await navigator.serviceWorker.register("/sw.js").catch(() => null);
+    if (!reg?.pushManager) return setState("unsupported");
+    const sub = await reg.pushManager.getSubscription().catch(() => null);
     setState(sub ? "on" : "off");
   }, []);
   useEffect(() => {
@@ -215,6 +217,7 @@ export function MoreScreen() {
   return (
     <div>
       <PageTitle title="More" subtitle="Notifications, emails and app settings" />
+      <LifeTiles />
 
       <Group title="Where reminders reach you">
         <Row icon={<Smartphone className="h-[18px] w-[18px]" />} title="Phone notifications" desc={pushDesc[push.state]}>
@@ -330,6 +333,12 @@ export function MoreScreen() {
         <Row icon={<BellRing className="h-[18px] w-[18px]" />} title="Week ahead" desc="Sunday evening · next 7 days">
           <Toggle label="Week ahead" on={prefs.emails.weekly} onChange={(v) => savePrefs({ ...prefs, emails: { ...prefs.emails, weekly: v } })} />
         </Row>
+        <Row icon={<Download className="h-[18px] w-[18px]" />} title="Monthly money report" desc="1st of each month · totals, top categories, goals">
+          <Toggle label="Monthly report" on={prefs.emails.monthly} onChange={(v) => savePrefs({ ...prefs, emails: { ...prefs.emails, monthly: v } })} />
+        </Row>
+        <Row icon={<Download className="h-[18px] w-[18px]" />} title="Weekly backup" desc="Sunday · full backup (JSON) + money (CSV) attached">
+          <Toggle label="Weekly backup" on={prefs.emails.backup !== false} onChange={(v) => savePrefs({ ...prefs, emails: { ...prefs.emails, backup: v } })} />
+        </Row>
       </Group>
 
       <Group title="App">
@@ -339,6 +348,19 @@ export function MoreScreen() {
         <a download href="/api/transactions/export" className="block hover:bg-raised">
           <Row icon={<Download className="h-[18px] w-[18px]" />} title="Export money data" desc="CSV for Excel / Google Sheets" />
         </a>
+        <a download href="/api/backup" className="block hover:bg-raised">
+          <Row icon={<Download className="h-[18px] w-[18px]" />} title="Download full backup" desc="Everything as one JSON file" />
+        </a>
+        <button
+          onClick={() =>
+            api("/api/backup", { method: "POST" })
+              .then(() => toast({ message: "Backup emailed" }))
+              .catch((e) => toast({ message: (e as Error).message, tone: "error" }))
+          }
+          className="block w-full text-left hover:bg-raised"
+        >
+          <Row icon={<Mail className="h-[18px] w-[18px]" />} title="Email a backup now" />
+        </button>
         <button onClick={logout} className="block w-full text-left hover:bg-raised">
           <Row icon={<LogOut className="h-[18px] w-[18px]" />} title="Lock Remindo" desc="You'll need your passcode to open it again" />
         </button>

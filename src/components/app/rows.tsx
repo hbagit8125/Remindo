@@ -207,7 +207,8 @@ export function ReminderItem({ i, showDay, now }: { i: AgendaItem; showDay?: boo
 export function TxItem({ t }: { t: Transaction }) {
   const { open } = useSheet();
   const { undoable } = useToast();
-  const m = categoryMeta(t.category);
+  const transfer = t.type === "transfer";
+  const m = transfer ? { emoji: "⇄", color: "#64748b" } : categoryMeta(t.category);
   const income = t.type === "income";
 
   const remove = () => {
@@ -234,6 +235,8 @@ export function TxItem({ t }: { t: Transaction }) {
               merchant: t.merchant,
               method: t.method,
               date: t.date,
+              accountId: t.accountId,
+              toAccountId: t.toAccountId,
             },
           })
         }
@@ -243,13 +246,13 @@ export function TxItem({ t }: { t: Transaction }) {
           {m.emoji}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium">{t.note || t.category}</span>
+          <span className="block truncate font-medium">{t.note || (transfer ? "Transfer" : t.category)}</span>
           <span className="block truncate text-xs text-muted">
             {[t.category, t.merchant, t.method && METHOD_LABEL[t.method], t.reminderId && "from bill"].filter(Boolean).join(" · ")}
           </span>
         </span>
         <span className={clsx("shrink-0 font-semibold tabular-nums", income ? "text-emerald-500" : "text-fg")}>
-          {income ? "+" : "−"}
+          {income ? "+" : transfer ? "" : "−"}
           {formatINR(t.amountPaise)}
         </span>
       </button>

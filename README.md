@@ -35,6 +35,33 @@ mark them done.
 - **Spending in emails:** yesterday and month-to-date in the morning digest, the last 7 days in the Sunday preview.
 - **CSV export** of everything.
 
+## Money+
+- **Accounts & wallets** (bank, UPI, cash, card) with balances, and transfers between them.
+- **Favourites:** one-tap "Chai ₹20" on Home; Remindo also suggests ones you log often.
+- **Split & owe:** "Paid 1200 for dinner, Arun owes 600" logs the expense and tracks the due, with a reminder to follow up.
+- **Savings goals** with how much to put aside per month.
+- **Receipt scan** (photo → expense) in the app and on Telegram, and **bank SMS**: share or paste it and Remindo reads the amount.
+- **Monthly report email** on the 1st and a **yearly view** in Insights.
+
+## Assistant
+- **Ask questions:** "How much did I spend on food this month?", "What's on Friday?", "Who owes me?" Answers come straight from your data.
+- **Change things by voice or text:** "Mark gym done", "Snooze rent to tomorrow", "Move dentist to Monday 5pm". You confirm before anything changes.
+- **Malayalam voice** in the app (EN / മല toggle) and on Telegram.
+- **Suggestions:** notices bills you pay every month and offers to make them reminders.
+
+## Life
+More → Life:
+- **Documents:** insurance, PUC, licence, passport… Reminded 30 days, 7 days, 1 day before and on the day. "Renewed" moves the date and logs the cost.
+- **People:** birthdays and anniversaries every year (a week before, the day before, on the day), with age and gift ideas.
+- **Health:** dose reminders for each medicine. Tap Done and the tablet count goes down; you get one refill alert when it runs low.
+- **Study:** exams and assignments, reminded a week, a day and 3 hours before.
+- **Notes & lists:** shopping/packing lists and quick notes. Say *"add eggs and bread to my shopping list"* in the app or on Telegram.
+
+## Reliability
+- **Works offline:** pages and your last-loaded data open without internet. Things you add or tick off while offline are saved on the phone and synced when you're back online.
+- **Weekly backup email** (Sunday) with a full JSON backup and a money CSV attached. You can also download or email a backup from More.
+- **Customise Home:** reorder or hide widgets, including "Coming up" (renewals, birthdays, refills).
+
 ## AI and speed
 - **AI chain:** Gemini, then a second Gemini model if the first is busy, then **Claude Haiku** (optional, paid, only if `ANTHROPIC_API_KEY` is set), then an offline parser. Each step has a time limit, so a busy AI never hangs the app.
 - Voice notes are transcribed by Gemini. The Claude API doesn't take audio.
