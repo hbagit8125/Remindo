@@ -29,8 +29,14 @@ mark them done.
 - **Spending in emails:** yesterday and month-to-date in the morning digest, the last 7 days in the Sunday preview.
 - **CSV export** of everything.
 
+## Notifications
+- **Phone push:** More → Turn on. No keys to configure; Remindo creates its own push keys on first use.
+- **Telegram:** create a bot with @BotFather, paste the token in More → Telegram → Connect, then tap Start. Only your chat is accepted. You can also set `TELEGRAM_BOT_TOKEN` in Vercel instead of pasting it.
+- **Quiet hours:** hold push and Telegram at night (High priority still alerts; email always arrives).
+- **Evening review** around 9pm, plus error alerts if a background job fails.
+
 ### Upgrading an existing install
-Run `drizzle/0001_expenses.sql` once in the Neon SQL Editor. It only **adds** tables and a column, so existing reminders are untouched.
+Run each new file in `drizzle/` once in the Neon SQL Editor, in order (`0001_expenses.sql`, `0002_notifications.sql`, …). They only **add** tables and columns, so existing data is untouched.
 
 ## How delivery works (and why nothing gets missed)
 

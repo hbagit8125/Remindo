@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isCronAuthorized } from "@/lib/auth";
 import { sweep } from "@/lib/scheduler";
+import { runJob } from "@/lib/errors";
 
 /**
  * Safety net, called every 5 minutes by cron-job.org (free).
@@ -9,5 +10,5 @@ import { sweep } from "@/lib/scheduler";
  */
 export async function GET(req: Request) {
   if (!isCronAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  return NextResponse.json(await sweep());
+  return NextResponse.json(await runJob("sweep", () => sweep()));
 }

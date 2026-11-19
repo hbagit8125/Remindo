@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isValidSession, SESSION_COOKIE } from "@/lib/auth";
 
 // Endpoints that authenticate themselves (QStash signature, cron secret or signed email link).
-const PUBLIC = ["/login", "/api/auth/login", "/api/deliver", "/api/action", "/api/cron", "/api/sweep"];
+// Telegram webhook checks its secret header; push actions carry a signed token.
+const PUBLIC = ["/login", "/api/auth/login", "/api/deliver", "/api/action", "/api/cron", "/api/sweep", "/api/telegram/webhook", "/api/push/action"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -19,5 +20,5 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|icon.*|.*\\.png$|.*\\.svg$).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|sw\\.js|icon.*|.*\\.png$|.*\\.svg$).*)"],
 };

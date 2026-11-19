@@ -8,6 +8,10 @@ import { config } from "./config";
 import { describeLead } from "./reminder-input";
 import { fmtLocal } from "./time";
 import { paidOccurrences } from "./finance";
+import { getPrefs, inQuietHours } from "./settings";
+import { sendPush } from "./push";
+import { sendTelegram, h } from "./telegram";
+import { reportError } from "./errors";
 import { formatINR } from "./money";
 
 /** How far ahead alerts are queued. QStash free tier allows up to 7 days of delay. */
@@ -79,15 +83,15 @@ export async function cancelQueued(reminderId: string, occurrenceAt?: Date) {
 
 // ---------------------------------------------------------------- sending
 
-async function actionLinks(deliveryId: string) {
-  const link = async (act: string) =>
-    `${config.appUrl}/api/action?t=${await signToken({ did: deliveryId, act }, "14d")}`;
-  return {
-    done: await link("done"),
-    snooze15: await link("snooze15"),
-    snooze60: await link("snooze60"),
-    tomorrow: await link("tomorrow"),
-  };
+/** Signed tokens for Done/Snooze buttons (email links and push notification buttons). */
+async function actionTokens(deliveryId: string) {
+  const t = (act: string) => signToken({ did: deliveryId, act }, "14d");
+  return { done: await t("done"), snooze15: await t("snooze15"), snooze60: await t("snooze60"), tomorrow: await t("tomorrow") };
+}
+
+function linksFrom(tokens: Awaited<ReturnType<typeof actionTokens>>) {
+  const u = (t: string) => `${config.appUrl}/api/action?t=${t}`;
+  return { done: u(tokens.done), snooze15: u(tokens.snooze15), snooze60: u(tokens.snooze60), tomorrow: u(tokens.tomorrow) };
 }
 
 function headlineFor(d: Delivery, r: Reminder) {
@@ -127,34 +131,82 @@ export async function sendDelivery(deliveryId: string): Promise<"sent" | "skippe
     return "skipped";
   }
 
-  try {
-    const headline = headlineFor(d, r);
-    const subject = `${r.priority === "high" ? "❗ " : "⏰ "}${r.title}${d.leadMinutes > 0 && d.kind === "alert" ? ` · ${describeLead(d.leadMinutes)}` : ""}`;
-    await sendEmail(
-      subject,
-      reminderEmail({
-        title: r.title,
-        notes: r.notes,
-        priority: r.priority,
-        whenText: whenText(r, d.occurrenceAt),
-        headline,
-        links: await actionLinks(d.id),
-      }),
-    );
-    await db()
-      .update(deliveries)
-      .set({ status: "sent", sentAt: new Date(), attempts: d.attempts + 1, error: null })
-      .where(eq(deliveries.id, d.id));
-    await maybeEscalate(d, r);
-    return "sent";
-  } catch (e) {
+  const prefs = await getPrefs();
+  // Quiet hours hold back push + Telegram for anything that isn't High priority. Email still goes.
+  const quiet = r.priority !== "high" && inQuietHours(prefs.quietHours);
+  const headline = headlineFor(d, r);
+  const when = whenText(r, d.occurrenceAt);
+  const tokens = await actionTokens(d.id);
+  const sentVia: string[] = [];
+  const errors: string[] = [];
+
+  if (prefs.channels.email) {
+    try {
+      const subject = `${r.priority === "high" ? "❗ " : "⏰ "}${r.title}${d.leadMinutes > 0 && d.kind === "alert" ? ` · ${describeLead(d.leadMinutes)}` : ""}`;
+      await sendEmail(subject, reminderEmail({ title: r.title, notes: r.notes, priority: r.priority, whenText: when, headline, links: linksFrom(tokens) }));
+      sentVia.push("email");
+    } catch (e) {
+      errors.push((e as Error).message);
+    }
+  }
+  if (!quiet && prefs.channels.push) {
+    try {
+      const n = await sendPush({
+        title: `${r.priority === "high" ? "❗ " : ""}${r.title}`,
+        body: `${headline} · ${when}`,
+        tag: `${r.id}:${d.occurrenceAt.toISOString()}`,
+        url: config.appUrl,
+        sticky: r.priority === "high",
+        actions: [
+          { action: "done", title: "✓ Done", token: tokens.done },
+          { action: "snooze", title: "Snooze 1h", token: tokens.snooze60 },
+        ],
+      });
+      if (n) sentVia.push("push");
+    } catch (e) {
+      errors.push(`push: ${(e as Error).message}`);
+    }
+  }
+  if (!quiet && prefs.channels.telegram) {
+    try {
+      const m = await sendTelegram(
+        `${r.priority === "high" ? "❗" : "⏰"} <b>${h(r.title)}</b>\n${h(headline)} · ${h(when)}${r.notes ? `\n<i>${h(r.notes)}</i>` : ""}`,
+        reminderKeyboard(d.id, r.amountPaise),
+      );
+      if (m) sentVia.push("telegram");
+    } catch (e) {
+      errors.push(`telegram: ${(e as Error).message}`);
+    }
+  }
+
+  if (!sentVia.length && errors.length) {
     const attempts = d.attempts + 1;
     await db()
       .update(deliveries)
-      .set({ status: attempts >= 5 ? "failed" : "queued", attempts, error: (e as Error).message })
+      .set({ status: attempts >= 5 ? "failed" : "queued", attempts, error: errors.join("; ").slice(0, 500) })
       .where(eq(deliveries.id, d.id));
+    if (attempts >= 5) await reportError("delivery", `Couldn't send "${r.title}" after 5 tries: ${errors.join("; ")}`);
     return "failed";
   }
+  await db()
+    .update(deliveries)
+    .set({ status: "sent", sentAt: new Date(), attempts: d.attempts + 1, held: quiet, error: errors.length ? errors.join("; ").slice(0, 500) : null })
+    .where(eq(deliveries.id, d.id));
+  await maybeEscalate(d, r);
+  return "sent";
+}
+
+/** Telegram buttons under a reminder. callback_data must stay under 64 bytes. */
+export function reminderKeyboard(deliveryId: string, amountPaise: number | null) {
+  const rows = [
+    [
+      { text: "✓ Done", callback_data: `a:done:${deliveryId}` },
+      { text: "Snooze 1h", callback_data: `a:snooze60:${deliveryId}` },
+    ],
+    [{ text: "Tomorrow 9am", callback_data: `a:tomorrow:${deliveryId}` }],
+  ];
+  if (amountPaise) rows[1].push({ text: `Log ${formatINR(amountPaise)}`, callback_data: `a:log:${deliveryId}` });
+  return rows;
 }
 
 /** High-priority reminders re-send until marked done or snoozed. */

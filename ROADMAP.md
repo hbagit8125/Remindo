@@ -14,8 +14,22 @@ Ideas for growing Remindo into a full daily assistant. Everything here can stay 
 - [x] Monthly budgets with 80% / 100% email alerts
 - [x] Home / Reminders / Money / Insights redesign, light/dark theme, swipe + undo
 
-## In progress
-- [ ] Simpler budget setup: one card plus a bottom sheet (`feature/budget-ui`)
+- [x] Simpler budget setup (card + bottom sheet)
+
+## In progress: Phase 1 (`feature/phase1-notifications`)
+- [x] Phone push notifications with Done / Snooze buttons
+- [x] Telegram bot: alerts with buttons, add by text or voice note (English / Malayalam), /today
+- [x] Quiet hours (push + Telegram only; email always arrives; "While you slept" in the morning digest)
+- [x] Evening review email + Telegram summary
+- [x] Error alerts for failing jobs
+- [x] More tab with Settings; Insights moved under Money
+
+## Agreed plan (one PR per phase)
+- **Phase 2, Plan your day:** tasks + today focus, calendar (week/month), global search, home-screen shortcuts
+- **Phase 3, Money+:** favourites, accounts/wallets, split & owe, savings goals, receipt scan, SMS share/forward/paste, monthly report, yearly view
+- **Phase 4, Assistant:** ask questions, edit by voice, Malayalam, pattern suggestions
+- **Phase 5, Life & notes:** documents/renewals, people, health/medicines, study, notes & lists
+- **Phase 6, Reliability:** offline support, weekly backup email, Home widgets
 
 ---
 

@@ -53,6 +53,8 @@ export const deliveries = pgTable(
     kind: text("kind").notNull().default("alert"), // alert | snooze | escalation
     dedupeKey: text("dedupe_key").notNull(),
     status: text("status").notNull().default("queued"), // queued | sending | sent | cancelled | failed
+    /** Push/Telegram were held back by quiet hours (email still went). Shown in the morning digest. */
+    held: boolean("held").notNull().default(false),
     qstashId: text("qstash_id"),
     attempts: integer("attempts").notNull().default(0),
     sentAt: timestamp("sent_at", { withTimezone: true }),
@@ -125,6 +127,34 @@ export const budgetAlerts = pgTable(
   },
   (t) => [uniqueIndex("budget_alerts_idx").on(t.month, t.category, t.threshold)],
 );
+
+/** App settings as key → JSON value (quiet hours, channels, Telegram link, VAPID keys…). */
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Browsers/phones that allowed push notifications. */
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    label: text("label"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("push_endpoint_idx").on(t.endpoint)],
+);
+
+/** Things parsed from a Telegram message, waiting for the Save button. */
+export const telegramDrafts = pgTable("telegram_drafts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  payload: jsonb("payload").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export type Reminder = typeof reminders.$inferSelect;
 export type Transaction = typeof transactions.$inferSelect;

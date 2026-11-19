@@ -4,15 +4,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { clsx } from "clsx";
-import { AlarmClock, Bell, Home, LogOut, Moon, PieChart, Plus, Sun, Wallet } from "lucide-react";
+import { AlarmClock, Bell, Home, LayoutGrid, LogOut, Moon, Plus, Sun, Wallet } from "lucide-react";
 import { SheetProvider, useSheet } from "./AddSheet";
 import { ToastProvider } from "./toast";
 
 const NAV = [
-  { href: "/", label: "Home", icon: Home },
-  { href: "/reminders", label: "Reminders", icon: Bell },
-  { href: "/expenses", label: "Money", icon: Wallet },
-  { href: "/insights", label: "Insights", icon: PieChart },
+  { href: "/", label: "Home", icon: Home, match: ["/"] },
+  { href: "/reminders", label: "Reminders", icon: Bell, match: ["/reminders"] },
+  { href: "/expenses", label: "Money", icon: Wallet, match: ["/expenses", "/insights"] },
+  { href: "/more", label: "More", icon: LayoutGrid, match: ["/more"] },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -25,7 +25,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function useTheme() {
+export function useTheme() {
   const [dark, setDark] = useState(true);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- read the class set before paint
@@ -42,7 +42,7 @@ function useTheme() {
   return { dark, toggle };
 }
 
-async function logout() {
+export async function logout() {
   await fetch("/api/auth/logout", { method: "POST" });
   window.location.href = "/login";
 }
@@ -51,7 +51,15 @@ function Frame({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const { open } = useSheet();
   const theme = useTheme();
-  const isActive = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
+  const isActive = (href: string) => {
+    const n = NAV.find((x) => x.href === href);
+    return (n?.match || [href]).some((m) => (m === "/" ? path === "/" : path.startsWith(m)));
+  };
+
+  // Register the service worker (needed for push notifications).
+  useEffect(() => {
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => null);
+  }, []);
 
   // Keyboard shortcut: "n" or "/" opens the add sheet.
   useEffect(() => {
@@ -122,9 +130,6 @@ function Frame({ children }: { children: React.ReactNode }) {
           <span className="flex gap-1">
             <button onClick={theme.toggle} aria-label="Toggle theme" className="grid h-10 w-10 place-items-center rounded-xl text-muted hover:bg-raised">
               {theme.dark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-            </button>
-            <button onClick={logout} aria-label="Lock" className="grid h-10 w-10 place-items-center rounded-xl text-muted hover:bg-raised">
-              <LogOut className="h-5 w-5" />
             </button>
           </span>
         </header>
