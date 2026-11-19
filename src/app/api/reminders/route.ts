@@ -2,8 +2,8 @@ import { connection, NextResponse } from "next/server";
 import { desc, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db, reminders } from "@/db";
-import { inputToRow, reminderInputSchema } from "@/lib/reminder-input";
-import { planAndQueue } from "@/lib/scheduler";
+import { reminderInputSchema } from "@/lib/reminder-input";
+import { createReminders } from "@/lib/create";
 import { describeRrule } from "@/lib/recurrence";
 
 export async function GET() {
@@ -21,8 +21,7 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message || "Invalid input" }, { status: 400 });
   }
-  const created = await db().insert(reminders).values(parsed.data.items.map(inputToRow)).returning();
-  // Queue anything due in the next 48h right away; later alerts are picked up by the daily cron.
-  const plan = await planAndQueue({ reminderIds: created.map((r) => r.id) }).catch((e) => ({ error: String(e) }));
-  return NextResponse.json({ created, plan });
+  // Alerts due in the next 48h are queued right away; later ones are picked up by the daily cron.
+  const created = await createReminders(parsed.data.items);
+  return NextResponse.json({ created });
 }

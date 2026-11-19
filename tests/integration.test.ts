@@ -17,6 +17,7 @@ delete process.env.GEMINI_API_KEY;
 delete process.env.GROQ_API_KEY;
 
 const sent: { subject: string; html: string }[] = [];
+const tgCalls: { method: string; body: Record<string, unknown> }[] = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
   if (String(url).includes("api.resend.com")) {
@@ -24,12 +25,18 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     sent.push({ subject: b.subject, html: b.html });
     return new Response(JSON.stringify({ id: `email_${sent.length}` }), { status: 200, headers: { "content-type": "application/json" } });
   }
+  const tgMatch = String(url).match(/api\.telegram\.org\/bot[^/]+\/(\w+)/);
+  if (tgMatch) {
+    tgCalls.push({ method: tgMatch[1], body: JSON.parse(String(init?.body || "{}")) });
+    const result = tgMatch[1] === "getMe" ? { id: 1, username: "test_bot", first_name: "Remindo" } : { message_id: tgCalls.length };
+    return new Response(JSON.stringify({ ok: true, result }), { status: 200, headers: { "content-type": "application/json" } });
+  }
   return realFetch(url as string, init);
 }) as typeof fetch;
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -165,6 +172,94 @@ async function main() {
   const { parseLocally } = await import("../src/lib/parse");
   assert.equal(parseLocally("Spent 450 on lunch").transactions[0].category, "Food");
   assert.equal(parseLocally("Call mom tomorrow at 7pm").reminders.length, 1);
+
+  // 9. Phase 1: channels, quiet hours, Telegram, evening review, error alerts.
+  const Set_ = await import("../src/lib/settings");
+  const { vapidKeys } = await import("../src/lib/push");
+  const keys = await vapidKeys();
+  assert.ok(keys.publicKey.length > 40, "VAPID keys auto-generated");
+  assert.deepEqual(await vapidKeys(), keys, "VAPID keys stable");
+
+  const q = { enabled: true, start: "23:00", end: "07:00" };
+  const at = (hhmm: string) => new Date(`2026-11-19T${hhmm}:00+05:30`);
+  assert.equal(Set_.inQuietHours(q, at("23:30")), true);
+  assert.equal(Set_.inQuietHours(q, at("06:59")), true);
+  assert.equal(Set_.inQuietHours(q, at("07:00")), false);
+  assert.equal(Set_.inQuietHours(q, at("14:00")), false);
+  assert.equal(Set_.inQuietHours({ ...q, enabled: false }, at("23:30")), false);
+
+  await Set_.setSetting("telegram", { token: "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", chatId: 42, chatName: "Hashir" });
+  // Quiet window that always includes "now": normal reminders skip Telegram, high ones don't.
+  const nowHM = local(0).time;
+  const endHM = local(120).time;
+  await Set_.setSetting("prefs", { ...Set_.DEFAULT_PREFS, quietHours: { enabled: true, start: local(-60).time, end: endHM } });
+  void nowHM;
+  const [quietR] = await db().insert(reminders).values(inputToRow({ title: "Water plants", ...local(-1), recurrence: "none", interval: 1, priority: "normal" })).returning();
+  const tgBefore = tgCalls.length;
+  const emailsBefore = sent.length;
+  await S.planAndQueue({ reminderIds: [quietR.id] });
+  assert.equal(sent.length, emailsBefore + 1, "email still sent in quiet hours");
+  assert.equal(tgCalls.length, tgBefore, "telegram held in quiet hours");
+  const [heldRow] = await db().select().from(deliveries).where(eq(deliveries.reminderId, quietR.id));
+  assert.equal(heldRow.held, true);
+
+  const [loudR] = await db().insert(reminders).values(inputToRow({ title: "Pay credit card", ...local(-1), recurrence: "none", interval: 1, priority: "high", amount: 5000 })).returning();
+  await S.planAndQueue({ reminderIds: [loudR.id] });
+  const msg = tgCalls.filter((c) => c.method === "sendMessage").at(-1)!;
+  assert.match(String(msg.body.text), /Pay credit card/);
+  const kb = (msg.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard.flat();
+  assert.ok(kb.find((b) => b.callback_data.startsWith("a:log:")), "bill shows Log button");
+  assert.ok(kb.every((b) => Buffer.byteLength(b.callback_data) <= 64), "callback_data within Telegram limit");
+
+  // Tap "Done" in Telegram via the real webhook route.
+  const { webhookSecret } = await import("../src/lib/telegram");
+  const hook = await import("../src/app/api/telegram/webhook/route");
+  const doneBtn = kb.find((b) => b.callback_data.startsWith("a:done:"))!;
+  const call = (update: object, secret = webhookSecret()) =>
+    hook.POST(new Request("https://x/api/telegram/webhook", { method: "POST", headers: { "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify(update) }));
+  assert.equal((await call({}, "wrong")).status, 403, "webhook rejects bad secret");
+  await call({ callback_query: { id: "cb1", data: doneBtn.callback_data, from: { id: 42 }, message: { message_id: 7, chat: { id: 42 }, text: "❗ Pay credit card" } } });
+  const [loudAfter] = await db().select().from(reminders).where(eq(reminders.id, loudR.id));
+  assert.equal(loudAfter.status, "done", "Telegram Done marks reminder done");
+  const edit = tgCalls.filter((c) => c.method === "editMessageText").at(-1)!;
+  assert.match(JSON.stringify(edit.body), /a:log:/, "offers Log after Done");
+
+  // A stranger's chat is ignored; the owner's text becomes a draft with Save/Cancel.
+  const before2 = tgCalls.length;
+  await call({ message: { message_id: 1, chat: { id: 999 }, text: "Spent 100 on tea" } });
+  assert.equal(tgCalls.length, before2, "other chats ignored");
+  await call({ message: { message_id: 2, chat: { id: 42 }, text: "Spent 100 on tea" } });
+  const draftMsg = tgCalls.filter((c) => c.method === "sendMessage").at(-1)!;
+  assert.match(String(draftMsg.body.text), /₹100/);
+  const saveBtn = (draftMsg.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0];
+  const txBefore = (await F.listAllTransactions()).length;
+  await call({ callback_query: { id: "cb2", data: saveBtn.callback_data, from: { id: 42 }, message: { message_id: 8, chat: { id: 42 }, text: "draft" } } });
+  assert.equal((await F.listAllTransactions()).length, txBefore + 1, "Save creates the expense");
+  await call({ callback_query: { id: "cb3", data: saveBtn.callback_data, from: { id: 42 }, message: { message_id: 8, chat: { id: 42 }, text: "draft" } } });
+  assert.equal((await F.listAllTransactions()).length, txBefore + 1, "double tap doesn't duplicate");
+
+  // Linking flow.
+  await Set_.setSetting("telegram", { token: "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", linkCode: "abc123", linkExpires: Date.now() + 60000 });
+  await call({ message: { message_id: 3, chat: { id: 77, first_name: "Hashir" }, text: "/start wrong" } });
+  assert.equal((await Set_.getTelegram()).chatId, undefined, "wrong code doesn't link");
+  await call({ message: { message_id: 4, chat: { id: 77, first_name: "Hashir" }, text: "/start abc123" } });
+  assert.equal((await Set_.getTelegram()).chatId, 77, "correct code links chat");
+
+  // Evening review + morning "while you slept".
+  const { sendEveningReview } = await import("../src/lib/digest");
+  const ev = await sendEveningReview(new Date());
+  assert.match(sent.at(-1)!.subject, /🌙/);
+  console.log("evening", ev);
+  await Set_.setSetting("prefs", Set_.DEFAULT_PREFS);
+  await sendDailyDigest(new Date());
+  assert.match(sent.at(-1)!.html, /While you slept/);
+
+  // Error alerts: at most one per job per hour.
+  const { reportError } = await import("../src/lib/errors");
+  const e1 = sent.length;
+  await reportError("test job", "boom");
+  await reportError("test job", "boom again");
+  assert.equal(sent.length, e1 + 1, "error alert rate-limited");
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

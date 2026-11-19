@@ -246,3 +246,61 @@ export async function parsePrompt(text: string): Promise<ParseResult & { engine:
     warning: `AI unavailable, used the simple parser. Check the details. (${errors.join("; ").slice(0, 200)})`,
   };
 }
+
+/**
+ * Turn a voice note into text. Gemini first (handles English, Malayalam and
+ * mixed speech), then Groq's free Whisper as a backup.
+ */
+export async function transcribeAudio(audio: Buffer, mimeType = "audio/ogg"): Promise<string> {
+  const errors: string[] = [];
+  const key = process.env.GEMINI_API_KEY;
+  if (key) {
+    try {
+      const model = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { inlineData: { mimeType, data: audio.toString("base64") } },
+                {
+                  text: "Transcribe this voice note exactly as spoken. It may be English, Malayalam, or a mix. Write Malayalam in Malayalam script and English in English. Return only the transcript.",
+                },
+              ],
+            },
+          ],
+          generationConfig: { temperature: 0 },
+        }),
+      });
+      if (!res.ok) throw new Error(`Gemini ${res.status}`);
+      const json = await res.json();
+      const text = json?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "").join("").trim();
+      if (text) return text;
+      throw new Error("empty transcript");
+    } catch (e) {
+      errors.push((e as Error).message);
+    }
+  }
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const form = new FormData();
+      form.append("file", new Blob([new Uint8Array(audio)], { type: mimeType }), "voice.ogg");
+      form.append("model", "whisper-large-v3");
+      const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+        body: form,
+      });
+      if (!res.ok) throw new Error(`Groq ${res.status}`);
+      const json = (await res.json()) as { text?: string };
+      if (json.text?.trim()) return json.text.trim();
+      throw new Error("empty transcript");
+    } catch (e) {
+      errors.push((e as Error).message);
+    }
+  }
+  throw new Error(`Couldn't transcribe (${errors.join("; ") || "no AI key set"})`);
+}

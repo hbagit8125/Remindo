@@ -9,6 +9,7 @@ import { useSheet } from "@/components/app/AddSheet";
 import { categoryMeta, type Transaction } from "@/components/types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
 import { BudgetBar } from "./HomeScreen";
+import { MoneyTabs } from "@/components/app/MoneyTabs";
 
 export function MonthSwitcher({ month, setMonth, now }: { month: string; setMonth: (m: string) => void; now: Date }) {
   const isCurrent = month === monthKey(now);
@@ -70,6 +71,7 @@ export function MoneyScreen() {
           </button>
         }
       />
+      <MoneyTabs />
 
       <div className="mb-4 flex items-center justify-between gap-2">
         <MonthSwitcher month={month} setMonth={setMonth} now={now} />

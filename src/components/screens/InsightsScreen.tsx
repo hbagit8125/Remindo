@@ -10,6 +10,7 @@ import { BudgetSheet } from "@/components/app/BudgetSheet";
 import { categoryMeta, type Insights } from "@/components/types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
 import { BudgetBar } from "./HomeScreen";
+import { MoneyTabs } from "@/components/app/MoneyTabs";
 import { MonthSwitcher } from "./MoneyScreen";
 
 export function InsightsScreen() {
@@ -25,13 +26,14 @@ export function InsightsScreen() {
   return (
     <div>
       <PageTitle
-        title="Insights"
+        title="Money"
         right={
           <a download href="/api/transactions/export" className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm text-muted hover:bg-raised hover:text-fg">
             <Download className="h-4 w-4" /> <span className="hidden sm:inline">Export</span>
           </a>
         }
       />
+      <MoneyTabs />
       <div className="mb-5">
         <MonthSwitcher month={month} setMonth={setMonth} now={now} />
       </div>

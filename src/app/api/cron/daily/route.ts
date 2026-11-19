@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { isCronAuthorized } from "@/lib/auth";
 import { planAndQueue } from "@/lib/scheduler";
 import { sendDailyDigest } from "@/lib/digest";
+import { runJob } from "@/lib/errors";
+import { getPrefs } from "@/lib/settings";
 
 /**
  * Runs once a day (Vercel cron, ~7am IST). Queues every alert for the next
@@ -9,7 +11,8 @@ import { sendDailyDigest } from "@/lib/digest";
  */
 export async function GET(req: Request) {
   if (!isCronAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const plan = await planAndQueue();
-  const digest = await sendDailyDigest().catch((e) => ({ error: (e as Error).message }));
+  const plan = await runJob("daily planning", () => planAndQueue());
+  const prefs = await getPrefs().catch(() => null);
+  const digest = prefs?.emails.morning === false ? "off" : await runJob("morning digest", () => sendDailyDigest());
   return NextResponse.json({ plan, digest });
 }
