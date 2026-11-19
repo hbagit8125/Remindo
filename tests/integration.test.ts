@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -286,6 +286,58 @@ async function main() {
   assert.equal(offline.transactions.length, 1, "offline splits the expense");
   assert.doesNotMatch(offline.warning || "", /\{|503/, "friendly warning, no raw error");
   delete process.env.GEMINI_API_KEY;
+
+  // 11. Phase 2: tasks, focus carry-over, calendar, search.
+  const T = await import("../src/lib/tasks");
+  const day1 = new Date("2026-11-19T06:00:00Z"); // 11:30 IST
+  const day2 = new Date("2026-11-20T06:00:00Z");
+  const [milk, report, someday] = await T.createTasks(
+    [
+      { title: "Buy milk", focus: true, priority: "normal" },
+      { title: "Finish report", dueDate: "2026-11-20", focus: false, priority: "high" },
+      { title: "Learn guitar", focus: false, priority: "low" },
+    ],
+    day1,
+  );
+  let focus = T.focusFrom(await T.listTasks(day1), day1);
+  assert.deepEqual(focus.map((t) => t.title), ["Buy milk"], "only starred task in today's focus");
+  focus = T.focusFrom(await T.listTasks(day2), day2);
+  assert.deepEqual(focus.map((t) => t.title).sort(), ["Buy milk", "Finish report"], "unfinished star carries over; due-today joins");
+  assert.equal(focus.find((t) => t.title === "Buy milk")!.carried, true);
+  await T.updateTask(milk.id, { done: true }, day2);
+  focus = T.focusFrom(await T.listTasks(new Date()), new Date());
+  assert.ok(!focus.find((t) => t.id === someday.id), "someday task not in focus");
+  const sum = await T.taskDaySummary(new Date());
+  assert.ok(sum.doneToday.find((t) => t.id === milk.id), "done-today summary");
+  void report;
+
+  const cal = await import("../src/app/api/calendar/route");
+  const calRes = await (await cal.GET(new Request("https://x/api/calendar?from=2026-11-16&to=2026-11-22"))).json();
+  assert.ok(calRes.days["2026-11-20"].tasks.find((t: { title: string }) => t.title === "Finish report"), "calendar shows task due");
+  const todayKey = local(0).date;
+  if (todayKey >= "2026-11-16" && todayKey <= "2026-11-22") assert.ok(calRes.days[todayKey]?.spent > 0, "calendar shows spend");
+  assert.equal((await cal.GET(new Request("https://x/api/calendar?from=2026-01-01&to=2026-12-31"))).status, 400, "range capped");
+
+  const search = await import("../src/app/api/search/route");
+  const sr = await (await search.GET(new Request("https://x/api/search?q=report"))).json();
+  assert.equal(sr.tasks[0].title, "Finish report");
+  const byAmount = await (await search.GET(new Request("https://x/api/search?q=100"))).json();
+  assert.ok(byAmount.transactions.length >= 1, "search by amount");
+
+  // Telegram draft containing a task.
+  await Set_.setSetting("telegram", { token: "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", chatId: 42 });
+  await call({ message: { message_id: 9, chat: { id: 42 }, text: "todo: renew passport" } });
+  const tdraft = tgCalls.filter((c) => c.method === "sendMessage").at(-1)!;
+  assert.match(String(tdraft.body.text), /☑️ <b>Renew passport/);
+  const tsave = (tdraft.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0];
+  await call({ callback_query: { id: "cb9", data: tsave.callback_data, from: { id: 42 }, message: { message_id: 10, chat: { id: 42 }, text: "d" } } });
+  assert.ok((await T.listTasks()).find((t) => t.title === "Renew passport"), "Telegram saves the task");
+  await call({ message: { message_id: 11, chat: { id: 42 }, text: "/today" } });
+  assert.match(String(tgCalls.filter((c) => c.method === "sendMessage").at(-1)!.body.text), /Focus|Today/);
+
+  const ev2 = await sendEveningReview(new Date());
+  void ev2;
+  assert.match(sent.at(-1)!.html, /Tasks finished/);
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

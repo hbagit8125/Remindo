@@ -7,6 +7,7 @@ import { db, deliveries, reminders, completions } from "@/db";
 import { formatINR } from "./money";
 import { sendTelegram, h } from "./telegram";
 import { config } from "./config";
+import { focusFrom, listTasks, taskDaySummary } from "./tasks";
 
 const when = (i: AgendaItem, withDay: boolean) => {
   const d = new Date(i.occurrenceAt);
@@ -29,6 +30,7 @@ export async function sendDailyDigest(now = new Date()) {
   const todays = week.filter((i) => new Date(i.occurrenceAt) >= today.start && new Date(i.occurrenceAt) < today.end && !i.done);
   const important = week.filter((i) => i.priority === "high" && !i.done && new Date(i.occurrenceAt) >= today.end);
 
+  const focusTasks = focusFrom(await listTasks(now), now).filter((t) => !t.done);
   // Alerts that quiet hours kept off your phone overnight.
   const held = await db()
     .select({ title: reminders.title, priority: reminders.priority, alertAt: deliveries.alertAt })
@@ -41,6 +43,10 @@ export async function sendDailyDigest(now = new Date()) {
       "While you slept",
       held.map((x) => ({ title: x.title, when: fmtLocal(x.alertAt, "h:mm a"), priority: x.priority })),
     ) +
+    digestSection(
+      "Today's focus",
+      focusTasks.map((t) => ({ title: t.title, when: t.overdue ? "overdue" : t.carried ? "carried over" : t.dueDate ? `due ${t.dueDate.slice(5)}` : "", priority: t.priority })),
+    ) +
     digestSection("Overdue", overdue.map(toItem(true))) +
     digestSection(`Today · ${fmtLocal(now, "EEEE d MMM")}`, todays.map(toItem(false)), "Nothing scheduled. Enjoy the day!") +
     digestSection("Important this week", important.map(toItem(true))) +
@@ -51,7 +57,8 @@ export async function sendDailyDigest(now = new Date()) {
   await sendEmail(subject, layout(`Good morning! Here's your ${fmtLocal(now, "EEEE")}.`, body));
   await sendTelegram(
     [
-      `☀️ <b>Good morning!</b> ${count ? `${count} reminder${count === 1 ? "" : "s"} today` : "Nothing scheduled today"}${overdue.length ? `, ${overdue.length} overdue` : ""}.`,
+      `☀️ <b>Good morning!</b> ${count ? `${count} reminder${count === 1 ? "" : "s"} today` : "Nothing scheduled today"}${overdue.length ? `, ${overdue.length} overdue` : ""}${focusTasks.length ? `, ${focusTasks.length} focus task${focusTasks.length === 1 ? "" : "s"}` : ""}.`,
+      ...focusTasks.slice(0, 6).map((t) => `☐ ${h(t.title)}`),
       ...todays.slice(0, 8).map((i) => `• ${when(i, false)} · ${h(i.title)}`),
       ...(important.length ? ["", "<b>Coming up</b>", ...important.slice(0, 3).map((i) => `❗ ${when(i, true)} · ${h(i.title)}`)] : []),
     ].join("\n"),
@@ -108,8 +115,17 @@ export async function sendEveningReview(now = new Date()) {
       .map((t) => `<div style="font-size:13px;color:#6b7280;margin-top:4px">${t.note || t.category} · ${formatINR(t.amountPaise)}</div>`)
       .join("")}`;
 
+  const tasksToday = await taskDaySummary(now);
   const body =
     digestSection(`Done today · ${Math.max(done.length, doneOther.length)}`, done.map(toItem(false)), "Nothing ticked off today.") +
+    digestSection(
+      `Tasks finished · ${tasksToday.doneToday.length}`,
+      tasksToday.doneToday.map((t) => ({ title: t.title, when: "✓", priority: t.priority })),
+    ) +
+    digestSection(
+      "Tasks carrying over to tomorrow",
+      tasksToday.pending.map((t) => ({ title: t.title, when: t.overdue ? "overdue" : "", priority: t.priority })),
+    ) +
     digestSection("Carried to tomorrow", carried.map(toItem(true))) +
     digestSection(`Tomorrow · ${fmtLocal(tomorrow.start, "EEEE d MMM")}`, next.map(toItem(false)), "Nothing scheduled yet.") +
     spendHtml +
@@ -122,7 +138,8 @@ export async function sendEveningReview(now = new Date()) {
   );
   await sendTelegram(
     [
-      `🌙 <b>Day in review</b>: ${doneCount} done${carried.length ? `, ${carried.length} pending` : ""}, ${formatINR(spent)} spent.`,
+      `🌙 <b>Day in review</b>: ${doneCount} done${carried.length ? `, ${carried.length} pending` : ""}${tasksToday.doneToday.length ? `, ${tasksToday.doneToday.length} task${tasksToday.doneToday.length === 1 ? "" : "s"} finished` : ""}, ${formatINR(spent)} spent.`,
+      ...(tasksToday.pending.length ? ["", "<b>Tasks carrying over</b>", ...tasksToday.pending.slice(0, 6).map((t) => `☐ ${h(t.title)}`)] : []),
       ...(carried.length ? ["", "<b>Still pending</b>", ...carried.slice(0, 6).map((i) => `• ${h(i.title)}`)] : []),
       ...(next.length ? ["", "<b>Tomorrow</b>", ...next.slice(0, 6).map((i) => `• ${when(i, false)} · ${h(i.title)}`)] : []),
     ].join("\n"),

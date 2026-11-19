@@ -91,7 +91,7 @@ export function RemindersScreen() {
   );
 }
 
-function DayGroups({ list, now }: { list: AgendaItem[]; now: Date }) {
+export function DayGroups({ list, now }: { list: AgendaItem[]; now: Date }) {
   if (!list.length) return <Empty icon={<CalendarDays className="h-6 w-6" />} title="Nothing coming up" text="Upcoming reminders for the next few months show here." />;
   const groups = new Map<string, AgendaItem[]>();
   for (const i of list) {
@@ -111,7 +111,7 @@ function DayGroups({ list, now }: { list: AgendaItem[]; now: Date }) {
   );
 }
 
-function AllReminders({ rows }: { rows: ReminderRow[] }) {
+export function AllReminders({ rows }: { rows: ReminderRow[] }) {
   const a = useReminderActions();
   if (!rows.length) return <Empty icon={<ListTodo className="h-6 w-6" />} title="No reminders yet" text="Tap + to add your first one." />;
   const active = rows.filter((r) => r.status === "active");

@@ -6,6 +6,7 @@ import { getTelegram, setSetting } from "@/lib/settings";
 import { answerCallback, downloadFile, editTelegram, h, sendTelegram, webhookSecret } from "@/lib/telegram";
 import { parsePrompt, transcribeAudio, type ParseResult } from "@/lib/parse";
 import { createReminders, createTransactions } from "@/lib/create";
+import { createTasks, focusFrom, listTasks } from "@/lib/tasks";
 import { ACTIONS, performAction, type ActionName } from "@/lib/actions";
 import { agenda } from "@/lib/scheduler";
 import { formatINR } from "@/lib/money";
@@ -30,10 +31,10 @@ type TgUpdate = {
 };
 
 const HELP = `<b>What I can do</b>
-• Send me anything to save: <i>"Spent 200 on chai"</i>, <i>"Call mom tomorrow 7pm"</i>, <i>"Salary credited 85000"</i>
+• Send me anything to save: <i>"Spent 200 on chai"</i>, <i>"Call mom tomorrow 7pm"</i>, <i>"Buy milk"</i>, <i>"Salary credited 85000"</i>
 • Send a <b>voice note</b> (English or Malayalam) and I'll do the same
 • Tap the buttons on reminders to mark them done or snooze
-• /today: what's on today
+• /today: today's focus tasks and reminders
 • /help: this message`;
 
 /** Telegram calls this for every message or button tap sent to your bot. */
@@ -93,12 +94,12 @@ async function onMessage(m: TgMessage) {
   if (!input) return sendTelegram(`I can read text and voice notes.\n\n${HELP}`);
 
   const parsed = await parsePrompt(input);
-  if (!parsed.reminders.length && !parsed.transactions.length) {
+  if (!parsed.reminders.length && !parsed.transactions.length && !parsed.tasks.length) {
     return sendTelegram("I couldn't find a reminder or expense in that. Try: <i>Spent 150 on lunch</i> or <i>Pay rent on the 5th every month</i>");
   }
   const [draft] = await db()
     .insert(telegramDrafts)
-    .values({ payload: { reminders: parsed.reminders, transactions: parsed.transactions } })
+    .values({ payload: { reminders: parsed.reminders, transactions: parsed.transactions, tasks: parsed.tasks } })
     .returning();
   const warn = parsed.engine === "local" ? "\n\n<i>⚠️ AI was unavailable, so I used the simple parser. Please check.</i>" : "";
   await sendTelegram(`${draftText(parsed)}${warn}`, [
@@ -139,8 +140,9 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
       return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✖ <i>Cancelled</i>`);
     }
     const p = draft.payload as ParseResult;
-    await createReminders(p.reminders);
-    await createTransactions(p.transactions);
+    await createReminders(p.reminders || []);
+    await createTransactions(p.transactions || []);
+    await createTasks(p.tasks || []);
     await answerCallback(q.id, "Saved");
     return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ <b>Saved</b>`);
   }
@@ -155,6 +157,9 @@ function draftText(p: ParseResult) {
       `${inc ? "💰" : "💸"} ${inc ? "+" : ""}${formatINR(Math.round(t.amount * 100))} · ${h(t.note || t.category)} · ${h(t.category)}${t.method ? ` · ${t.method.toUpperCase()}` : ""}${t.date !== fmtLocal(new Date(), "yyyy-MM-dd") ? ` · ${t.date}` : ""}`,
     );
   }
+  for (const t of p.tasks || []) {
+    lines.push(`☑️ <b>${h(t.title)}</b>${t.dueDate ? ` · by ${t.dueDate}` : ""}${t.focus ? " · today" : ""}${t.priority === "high" ? " · ❗" : ""}`);
+  }
   for (const r of p.reminders) {
     const rep = r.recurrence !== "none" ? ` · repeats ${r.recurrence}` : "";
     lines.push(`⏰ <b>${h(r.title)}</b> · ${r.date}${r.time ? ` ${r.time}` : ""}${rep}${r.amount ? ` · ${formatINR(Math.round(r.amount * 100))}` : ""}${r.priority === "high" ? " · ❗" : ""}`);
@@ -165,9 +170,13 @@ function draftText(p: ParseResult) {
 async function todayText() {
   const { start, end } = localDayBounds(new Date());
   const items = await agenda(start, end);
-  if (!items.length) return "Nothing scheduled today 🎉";
+  const focus = focusFrom(await listTasks());
+  if (!items.length && !focus.length) return "Nothing scheduled today 🎉";
   return [
     `<b>Today · ${fmtLocal(new Date(), "EEE d MMM")}</b>`,
+    ...(focus.length
+      ? ["", "<b>Focus</b>", ...focus.map((t) => `${t.done ? "✅" : "☐"} ${h(t.title)}${t.overdue ? " · overdue" : t.carried ? " · carried over" : ""}`), "", "<b>Reminders</b>"]
+      : []),
     ...items.map(
       (i) =>
         `${i.done ? "✅" : i.priority === "high" ? "❗" : "•"} ${i.allDay ? "All day" : fmtLocal(new Date(i.occurrenceAt), "h:mm a")} · ${h(i.title)}${i.recurring ? " ↻" : ""}`,

@@ -8,6 +8,13 @@ export default function manifest(): MetadataRoute.Manifest {
     display: "standalone",
     background_color: "#0b0b12",
     theme_color: "#0b0b12",
+    // Long-press the app icon on Android.
+    shortcuts: [
+      { name: "Add expense", short_name: "Expense", url: "/?add=expense", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },
+      { name: "Add task", short_name: "Task", url: "/?add=task", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },
+      { name: "Add reminder", short_name: "Reminder", url: "/?add=reminder", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },
+      { name: "Ask Remindo", short_name: "Ask", url: "/?add=ask", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },
+    ],
     icons: [
       { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
       { src: "/icon-512.png", sizes: "512x512", type: "image/png" },

@@ -4,13 +4,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { clsx } from "clsx";
-import { AlarmClock, Bell, Home, LayoutGrid, LogOut, Moon, Plus, Sun, Wallet } from "lucide-react";
+import { AlarmClock, CalendarCheck, Home, LayoutGrid, LogOut, Moon, Plus, Search, Sun, Wallet } from "lucide-react";
+import { SearchOverlay } from "./SearchOverlay";
+import type { SheetMode } from "./AddSheet";
 import { SheetProvider, useSheet } from "./AddSheet";
 import { ToastProvider } from "./toast";
 
 const NAV = [
   { href: "/", label: "Home", icon: Home, match: ["/"] },
-  { href: "/reminders", label: "Reminders", icon: Bell, match: ["/reminders"] },
+  { href: "/plan", label: "Plan", icon: CalendarCheck, match: ["/plan", "/reminders"] },
   { href: "/expenses", label: "Money", icon: Wallet, match: ["/expenses", "/insights"] },
   { href: "/more", label: "More", icon: LayoutGrid, match: ["/more"] },
 ];
@@ -61,18 +63,35 @@ function Frame({ children }: { children: React.ReactNode }) {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => null);
   }, []);
 
-  // Keyboard shortcut: "n" or "/" opens the add sheet.
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // Keyboard: "n" opens the add sheet, "/" opens search.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       if (el.closest("input, textarea, select, [contenteditable]")) return;
-      if (e.key === "n" || e.key === "/") {
+      if (e.key === "n") {
         e.preventDefault();
         open({ mode: "ask" });
+      } else if (e.key === "/") {
+        e.preventDefault();
+        setSearchOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  // Home-screen shortcuts open the app at /?add=expense etc.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const add = url.searchParams.get("add") as SheetMode | "search" | null;
+    if (!add) return;
+    url.searchParams.delete("add");
+    window.history.replaceState(null, "", url.pathname + url.search);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of the launch URL
+    if (add === "search") setSearchOpen(true);
+    else if (["ask", "reminder", "task", "expense"].includes(add)) open({ mode: add });
   }, [open]);
 
   return (
@@ -91,6 +110,13 @@ function Frame({ children }: { children: React.ReactNode }) {
         >
           <Plus className="h-4 w-4" /> Add
           <kbd className="ml-1 rounded bg-white/20 px-1.5 text-[10px] font-medium">N</kbd>
+        </button>
+        <button
+          onClick={() => setSearchOpen(true)}
+          className="-mt-3 mb-6 flex items-center gap-2 rounded-xl border border-line px-3 py-2 text-sm text-muted hover:bg-raised hover:text-fg"
+        >
+          <Search className="h-4 w-4" /> Search
+          <kbd className="ml-auto rounded bg-raised px-1.5 text-[10px]">/</kbd>
         </button>
         <nav className="space-y-1">
           {NAV.map((n) => (
@@ -128,6 +154,9 @@ function Frame({ children }: { children: React.ReactNode }) {
             <span className="font-semibold tracking-tight">Remindo</span>
           </span>
           <span className="flex gap-1">
+            <button onClick={() => setSearchOpen(true)} aria-label="Search" className="grid h-10 w-10 place-items-center rounded-xl text-muted hover:bg-raised">
+              <Search className="h-5 w-5" />
+            </button>
             <button onClick={theme.toggle} aria-label="Toggle theme" className="grid h-10 w-10 place-items-center rounded-xl text-muted hover:bg-raised">
               {theme.dark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </button>
@@ -136,6 +165,8 @@ function Frame({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto w-full max-w-3xl px-4 pb-32 pt-3 md:px-8 md:pb-12 md:pt-8">{children}</main>
       </div>
+
+      {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}
 
       {/* Mobile bottom nav */}
       <nav className="pb-safe fixed inset-x-0 bottom-0 z-40 border-t border-line bg-[var(--bg)]/90 backdrop-blur-xl md:hidden">

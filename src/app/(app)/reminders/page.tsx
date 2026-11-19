@@ -1,5 +1,6 @@
-import { RemindersScreen } from "@/components/screens/RemindersScreen";
+import { redirect } from "next/navigation";
 
+/** Old address; reminders now live under Plan. */
 export default function Page() {
-  return <RemindersScreen />;
+  redirect("/plan?view=reminders");
 }
