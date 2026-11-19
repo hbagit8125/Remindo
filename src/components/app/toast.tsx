@@ -53,7 +53,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   );
 
   const toast: Ctx["toast"] = useCallback(
-    (t) => show({ ...t, id: ++seq.current, duration: t.duration ?? (t.action ? 5000 : 2500) }),
+    (t) => show({ ...t, id: ++seq.current, duration: t.duration ?? (t.action ? 7000 : 2500) }),
     [show],
   );
 
@@ -63,7 +63,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       const t: Toast = {
         id: ++seq.current,
         message,
-        duration: 5000,
+        duration: 8000,
         action: {
           label: "Undo",
           onClick: () => {

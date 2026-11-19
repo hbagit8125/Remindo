@@ -29,6 +29,11 @@ mark them done.
 - **Spending in emails:** yesterday and month-to-date in the morning digest, the last 7 days in the Sunday preview.
 - **CSV export** of everything.
 
+## AI and speed
+- **AI chain:** Gemini, then a second Gemini model if the first is busy, then **Claude Haiku** (optional, paid, only if `ANTHROPIC_API_KEY` is set), then an offline parser. Each step has a time limit, so a busy AI never hangs the app.
+- Voice notes are transcribed by Gemini. The Claude API doesn't take audio.
+- `vercel.json` runs the app in **Singapore (`sin1`)**, next to the Neon database. Keep both in the same region for fast screens.
+
 ## Notifications
 - **Phone push:** More → Turn on. No keys to configure; Remindo creates its own push keys on first use.
 - **Telegram:** create a bot with @BotFather, paste the token in More → Telegram → Connect, then tap Start. Only your chat is accepted. You can also set `TELEGRAM_BOT_TOKEN` in Vercel instead of pasting it.

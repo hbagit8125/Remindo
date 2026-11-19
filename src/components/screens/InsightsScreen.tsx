@@ -149,7 +149,8 @@ function BudgetCard({ data, month, now, onEdit }: { data: Insights; month: strin
 
   const current = month === monthKey(now);
   const [y, m] = month.split("-").map(Number);
-  const daysLeft = current ? new Date(Date.UTC(y, m, 0)).getUTCDate() - daysElapsed(month, now) : 0;
+  // Days left including today.
+  const daysLeft = current ? new Date(Date.UTC(y, m, 0)).getUTCDate() - daysElapsed(month, now) + 1 : 0;
   const spentFor = (c: string) => data.byCategory.find((x) => x.category === c)?.amount || 0;
 
   return (
