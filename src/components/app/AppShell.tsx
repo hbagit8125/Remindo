@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { AlarmClock, CalendarCheck, Home, LayoutGrid, LogOut, Moon, Plus, Search, Sun, Wallet } from "lucide-react";
+import { OfflineBanner } from "./OfflineBanner";
 import { SearchOverlay } from "./SearchOverlay";
 import type { SheetMode } from "./AddSheet";
 import { SheetProvider, useSheet } from "./AddSheet";
@@ -46,6 +47,8 @@ export function useTheme() {
 
 export async function logout() {
   await fetch("/api/auth/logout", { method: "POST" });
+  // Locked: don't leave your data readable in the offline cache.
+  if ("caches" in window) await caches.delete("remindo-v2").catch(() => null);
   window.location.href = "/login";
 }
 
@@ -166,7 +169,10 @@ function Frame({ children }: { children: React.ReactNode }) {
           </span>
         </header>
 
-        <main className="mx-auto w-full max-w-3xl px-4 pb-32 pt-3 md:px-8 md:pb-12 md:pt-8">{children}</main>
+        <main className="mx-auto w-full max-w-3xl px-4 pb-32 pt-3 md:px-8 md:pb-12 md:pt-8">
+          <OfflineBanner />
+          {children}
+        </main>
       </div>
 
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}

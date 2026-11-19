@@ -6,13 +6,13 @@ import { fmtLocal } from "./time";
 export type Prefs = {
   channels: { email: boolean; push: boolean; telegram: boolean };
   quietHours: { enabled: boolean; start: string; end: string };
-  emails: { morning: boolean; evening: boolean; weekly: boolean; monthly: boolean };
+  emails: { morning: boolean; evening: boolean; weekly: boolean; monthly: boolean; backup: boolean };
 };
 
 export const DEFAULT_PREFS: Prefs = {
   channels: { email: true, push: true, telegram: true },
   quietHours: { enabled: true, start: "23:00", end: "07:00" },
-  emails: { morning: true, evening: true, weekly: true, monthly: true },
+  emails: { morning: true, evening: true, weekly: true, monthly: true, backup: true },
 };
 
 /** Telegram connection details (the bot token is never sent to the browser). */

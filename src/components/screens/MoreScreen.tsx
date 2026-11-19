@@ -24,7 +24,7 @@ import { logout, useTheme } from "@/components/app/AppShell";
 type Prefs = {
   channels: { email: boolean; push: boolean; telegram: boolean };
   quietHours: { enabled: boolean; start: string; end: string };
-  emails: { morning: boolean; evening: boolean; weekly: boolean; monthly: boolean };
+  emails: { morning: boolean; evening: boolean; weekly: boolean; monthly: boolean; backup: boolean };
 };
 type SettingsRes = {
   prefs: Prefs;
@@ -335,6 +335,9 @@ export function MoreScreen() {
         <Row icon={<Download className="h-[18px] w-[18px]" />} title="Monthly money report" desc="1st of each month · totals, top categories, goals">
           <Toggle label="Monthly report" on={prefs.emails.monthly} onChange={(v) => savePrefs({ ...prefs, emails: { ...prefs.emails, monthly: v } })} />
         </Row>
+        <Row icon={<Download className="h-[18px] w-[18px]" />} title="Weekly backup" desc="Sunday · full backup (JSON) + money (CSV) attached">
+          <Toggle label="Weekly backup" on={prefs.emails.backup !== false} onChange={(v) => savePrefs({ ...prefs, emails: { ...prefs.emails, backup: v } })} />
+        </Row>
       </Group>
 
       <Group title="App">
@@ -344,6 +347,19 @@ export function MoreScreen() {
         <a download href="/api/transactions/export" className="block hover:bg-raised">
           <Row icon={<Download className="h-[18px] w-[18px]" />} title="Export money data" desc="CSV for Excel / Google Sheets" />
         </a>
+        <a download href="/api/backup" className="block hover:bg-raised">
+          <Row icon={<Download className="h-[18px] w-[18px]" />} title="Download full backup" desc="Everything as one JSON file" />
+        </a>
+        <button
+          onClick={() =>
+            api("/api/backup", { method: "POST" })
+              .then(() => toast({ message: "Backup emailed" }))
+              .catch((e) => toast({ message: (e as Error).message, tone: "error" }))
+          }
+          className="block w-full text-left hover:bg-raised"
+        >
+          <Row icon={<Mail className="h-[18px] w-[18px]" />} title="Email a backup now" />
+        </button>
         <button onClick={logout} className="block w-full text-left hover:bg-raised">
           <Row icon={<LogOut className="h-[18px] w-[18px]" />} title="Lock Remindo" desc="You'll need your passcode to open it again" />
         </button>

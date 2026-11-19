@@ -6,13 +6,73 @@ export const TZ = process.env.NEXT_PUBLIC_APP_TIMEZONE || "Asia/Kolkata";
 
 export class ApiError extends Error {}
 
-/** JSON fetch that redirects to login on 401 and throws readable errors. */
+// ------------------------------------------------------------- offline queue
+
+/** Changes that can safely wait for the network: adding entries, ticking things off. */
+const QUEUEABLE = /^\/api\/(reminders|transactions|tasks|occurrence|list-items|lists\/add|lists\/[^/]+\/items|favourites\/[^/]+|dues|goals\/[^/]+)(\/|$|\?)/;
+const QUEUE_KEY = "offlineQueue";
+export const QUEUE_EVENT = "remindo:queue";
+type Queued = { url: string; method: string; body: string | null; at: number };
+
+export function readQueue(): Queued[] {
+  try {
+    return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+function writeQueue(q: Queued[]) {
+  try {
+    localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+  } catch {}
+  window.dispatchEvent(new Event(QUEUE_EVENT));
+}
+
+let flushing = false;
+/** Send queued changes in order. Stops at the first network failure; drops ones the server rejects. */
+export async function flushQueue() {
+  if (flushing || !navigator.onLine) return 0;
+  flushing = true;
+  let sent = 0;
+  try {
+    let q = readQueue();
+    while (q.length) {
+      const item = q[0];
+      try {
+        const res = await fetch(item.url, { method: item.method, headers: item.body ? { "content-type": "application/json" } : {}, body: item.body });
+        if (res.status === 401) break;
+      } catch {
+        break; // still offline
+      }
+      q = q.slice(1);
+      writeQueue(q);
+      sent++;
+    }
+  } finally {
+    flushing = false;
+  }
+  if (sent) refreshAll();
+  return sent;
+}
+
+/** JSON fetch that redirects to login on 401 and throws readable errors. Offline changes are queued. */
 export async function api<T = unknown>(url: string, init?: RequestInit & { json?: unknown }): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: { ...(init?.json !== undefined ? { "content-type": "application/json" } : {}), ...init?.headers },
-    body: init?.json !== undefined ? JSON.stringify(init.json) : init?.body,
-  });
+  const method = (init?.method || "GET").toUpperCase();
+  const body = init?.json !== undefined ? JSON.stringify(init.json) : (init?.body as string | undefined);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers: { ...(init?.json !== undefined ? { "content-type": "application/json" } : {}), ...init?.headers },
+      body,
+    });
+  } catch (e) {
+    if (method !== "GET" && QUEUEABLE.test(url) && (typeof body === "string" || body === undefined)) {
+      writeQueue([...readQueue(), { url, method, body: body ?? null, at: Date.now() }]);
+      return { queued: true } as T;
+    }
+    throw new ApiError(navigator.onLine ? (e as Error).message : "You're offline. This needs the internet");
+  }
   if (res.status === 401) {
     window.location.href = "/login";
     throw new ApiError("Signed out");

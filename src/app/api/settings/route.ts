@@ -8,7 +8,7 @@ const time = z.string().regex(/^\d{2}:\d{2}$/);
 const prefsSchema = z.object({
   channels: z.object({ email: z.boolean(), push: z.boolean(), telegram: z.boolean() }),
   quietHours: z.object({ enabled: z.boolean(), start: time, end: time }),
-  emails: z.object({ morning: z.boolean(), evening: z.boolean(), weekly: z.boolean(), monthly: z.boolean() }),
+  emails: z.object({ morning: z.boolean(), evening: z.boolean(), weekly: z.boolean(), monthly: z.boolean(), backup: z.boolean().default(true) }),
 });
 
 /** Preferences plus connection status (never the bot token itself). */

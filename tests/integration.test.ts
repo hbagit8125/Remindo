@@ -16,14 +16,14 @@ delete process.env.QSTASH_TOKEN;
 delete process.env.GEMINI_API_KEY;
 delete process.env.GROQ_API_KEY;
 
-const sent: { subject: string; html: string }[] = [];
+const sent: { subject: string; html: string; attachments?: { filename: string; content: unknown }[] }[] = [];
 const tgCalls: { method: string; body: Record<string, unknown> }[] = [];
 const aiCalls: string[] = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
   if (String(url).includes("api.resend.com")) {
     const b = JSON.parse(String(init?.body));
-    sent.push({ subject: b.subject, html: b.html });
+    sent.push({ subject: b.subject, html: b.html, attachments: b.attachments });
     return new Response(JSON.stringify({ id: `email_${sent.length}` }), { status: 200, headers: { "content-type": "application/json" } });
   }
   if (String(url).includes("generativelanguage.googleapis.com")) {
@@ -526,6 +526,28 @@ async function main() {
   const save = (lmsg.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0];
   await call({ callback_query: { id: "cbl", data: save.callback_data, from: { id: 42 }, message: { message_id: 41, chat: { id: 42 }, text: "x" } } });
   assert.ok((await L.allLists()).find((x) => x.name === "Packing" && x.total === 1), "Telegram list add saved");
+
+  // ---------------------------------------------------------------- Phase 6: backup, home layout
+  const B = await import("../src/lib/backup");
+  const dumpAll = await B.exportAll();
+  assert.ok(dumpAll.data.documents.length >= 1 && dumpAll.data.lists.length >= 2, "backup includes life data");
+  assert.ok(!("settings" in dumpAll.data) && !("pushSubscriptions" in dumpAll.data), "secrets left out");
+  await B.sendBackup();
+  const bmail = sent.at(-1)!;
+  assert.match(bmail.subject, /backup/);
+  assert.deepEqual(bmail.attachments?.map((a) => a.filename.replace(/\d{4}-\d{2}-\d{2}/, "D")), ["remindo-backup-D.json", "remindo-transactions-D.csv"]);
+  process.env.CRON_SECRET = "test-cron";
+  const weeklyCron = await import("../src/app/api/cron/weekly/route");
+  const wk = await (await weeklyCron.GET(new Request("https://x/api/cron/weekly", { headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }))).json();
+  assert.ok(wk.backup && wk.preview, "weekly cron runs preview + backup");
+  const HL = await import("../src/app/api/home-layout/route");
+  await HL.PUT(new Request("https://x", { method: "PUT", body: JSON.stringify({ widgets: [{ id: "spending", hidden: false }, { id: "summary", hidden: true }] }) }));
+  const { getSetting } = await import("../src/lib/settings");
+  assert.equal((await getSetting<{ id: string }[]>("homeWidgets"))![0].id, "spending");
+  const { mergeLayout } = await import("../src/components/app/HomeWidgets");
+  const merged = mergeLayout([{ id: "spending", hidden: false }, { id: "gone", hidden: false }]);
+  assert.equal(merged[0].id, "spending");
+  assert.ok(!merged.some((w) => w.id === "gone") && merged.some((w) => w.id === "life"), "unknown dropped, new widgets appended");
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
