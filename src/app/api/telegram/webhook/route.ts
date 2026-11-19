@@ -5,6 +5,7 @@ import { safeEqual } from "@/lib/auth";
 import { getTelegram, setSetting } from "@/lib/settings";
 import { answerCallback, downloadFile, editTelegram, h, sendTelegram, webhookSecret } from "@/lib/telegram";
 import { parsePrompt, scanReceipt, transcribeAudio, type ParseResult } from "@/lib/parse";
+import { addToList } from "@/lib/life";
 import { createDues } from "@/lib/moneyplus";
 import { answerQuestion, executeCommand, resolveCommand, type Candidate, type Command } from "@/lib/assistant";
 import { createReminders, createTransactions } from "@/lib/create";
@@ -143,12 +144,12 @@ async function onMessage(m: TgMessage) {
     );
   }
 
-  if (!parsed.reminders.length && !parsed.transactions.length && !parsed.tasks.length && !parsed.dues?.length) {
+  if (!parsed.reminders.length && !parsed.transactions.length && !parsed.tasks.length && !parsed.dues?.length && !parsed.listItems?.length) {
     return sendTelegram("I couldn't find a reminder or expense in that. Try: <i>Spent 150 on lunch</i> or <i>Pay rent on the 5th every month</i>");
   }
   const [draft] = await db()
     .insert(telegramDrafts)
-    .values({ payload: { reminders: parsed.reminders, transactions: parsed.transactions, tasks: parsed.tasks, dues: parsed.dues || [] } })
+    .values({ payload: { reminders: parsed.reminders, transactions: parsed.transactions, tasks: parsed.tasks, dues: parsed.dues || [], listItems: parsed.listItems || [] } })
     .returning();
   const warn = parsed.engine === "local" ? "\n\n<i>⚠️ AI was unavailable, so I used the simple parser. Please check.</i>" : "";
   await sendTelegram(`${draftText(parsed)}${warn}`, [
@@ -209,6 +210,7 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
     await createTransactions(p.transactions || []);
     await createTasks(p.tasks || []);
     await createDues(p.dues || []);
+    for (const l of p.listItems || []) await addToList(l.list, l.items);
     await answerCallback(q.id, "Saved");
     return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ <b>Saved</b>`);
   }
@@ -225,6 +227,9 @@ function draftText(p: ParseResult) {
   }
   for (const d of p.dues || []) {
     lines.push(`🤝 ${d.direction === "they_owe" ? `${h(d.person)} owes you` : `You owe ${h(d.person)}`} ${formatINR(Math.round(d.amount * 100))}${d.note ? ` · ${h(d.note)}` : ""}`);
+  }
+  for (const l of p.listItems || []) {
+    lines.push(`📝 ${h(l.list)} list: ${h(l.items.join(", "))}`);
   }
   for (const t of p.tasks || []) {
     lines.push(`☑️ <b>${h(t.title)}</b>${t.dueDate ? ` · by ${t.dueDate}` : ""}${t.focus ? " · today" : ""}${t.priority === "high" ? " · ❗" : ""}`);

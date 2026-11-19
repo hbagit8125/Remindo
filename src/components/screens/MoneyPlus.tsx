@@ -13,11 +13,11 @@ import { ACCOUNT_META, type Account, type AccountKind, type Due, type Goal } fro
 import { formatINR } from "@/lib/money";
 
 
-const primaryBtn = "flex items-center justify-center gap-2 rounded-xl bg-fg px-4 py-2.5 text-sm font-semibold text-[var(--bg)] hover:opacity-90 disabled:opacity-40";
-const ghostBtn = "rounded-xl border border-line px-3 py-2 text-sm font-medium hover:bg-raised";
+export const primaryBtn = "flex items-center justify-center gap-2 rounded-xl bg-fg px-4 py-2.5 text-sm font-semibold text-[var(--bg)] hover:opacity-90 disabled:opacity-40";
+export const ghostBtn = "rounded-xl border border-line px-3 py-2 text-sm font-medium hover:bg-raised";
 
 /** Small modal used by the forms on these screens. */
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
     <div className="animate-fade fixed inset-0 z-[60] flex items-end justify-center bg-black/50 backdrop-blur-sm md:items-center md:p-6" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="animate-sheet pb-safe max-h-[92vh] w-full overflow-y-auto rounded-t-3xl border border-line bg-[var(--bg)] p-5 md:max-w-md md:rounded-3xl">
@@ -33,7 +33,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
-function useSubmit() {
+export function useSubmit() {
   const { toast } = useToast();
   const [busy, setBusy] = useState(false);
   const run = async (fn: () => Promise<unknown>, ok: string, after?: () => void) => {

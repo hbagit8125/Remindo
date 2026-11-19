@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, Loader2, Mic, MicOff, Sparkles, Star, Trash2, Wallet, X } from "lucide-react";
+import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, ListChecks, Loader2, Mic, MicOff, Sparkles, Star, Trash2, Wallet, X } from "lucide-react";
 import { api, dayKey, hideId, refreshAll, relativeDay, unhideId, useData } from "./client";
 import { useToast } from "./toast";
 import { ReminderEditor } from "./ReminderEditor";
@@ -157,7 +157,9 @@ const EXAMPLES = [
   "Salary credited 85000",
 ];
 
+type ListDraft = { list: string; items: string[] };
 type Draft =
+  | { kind: "list"; value: ListDraft }
   | { kind: "due"; value: DueInput }
   | { kind: "reminder"; value: ReminderInput }
   | { kind: "expense"; value: TransactionInput }
@@ -248,6 +250,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
         transactions: TransactionInput[];
         tasks: TaskInput[];
         dues?: DueInput[];
+        listItems?: ListDraft[];
         warning?: string;
         answer?: { text: string; lines?: string[] } | null;
         proposals?: Proposal[];
@@ -260,6 +263,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
       setDoneIds([]);
       setDrafts([
         ...r.transactions.map((value) => ({ kind: "expense" as const, value })),
+        ...(r.listItems || []).map((value) => ({ kind: "list" as const, value })),
         ...(r.dues || []).map((value) => ({ kind: "due" as const, value })),
         ...(r.tasks || []).map((value) => ({ kind: "task" as const, value })),
         ...r.reminders.map((value) => ({ kind: "reminder" as const, value })),
@@ -304,13 +308,16 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
     const transactions = drafts.filter((d) => d.kind === "expense").map((d) => d.value);
     const tasks = drafts.filter((d) => d.kind === "task").map((d) => d.value);
     const dues = drafts.filter((d) => d.kind === "due").map((d) => d.value);
+    const listAdds = drafts.filter((d) => d.kind === "list").map((d) => d.value as ListDraft);
     try {
       if (transactions.some((t) => !(t as TransactionInput).amount)) throw new Error("Add an amount to each money entry");
       if (reminders.length) await api("/api/reminders", { method: "POST", json: { items: reminders } });
       if (transactions.length) await api("/api/transactions", { method: "POST", json: { items: transactions } });
       if (tasks.length) await api("/api/tasks", { method: "POST", json: { items: tasks } });
       if (dues.length) await api("/api/dues", { method: "POST", json: { items: dues } });
+      for (const l of listAdds) await api("/api/lists/add", { method: "POST", json: l });
       const parts = [
+        listAdds.length && `${listAdds.reduce((n, l) => n + l.items.length, 0)} list item${listAdds.reduce((n, l) => n + l.items.length, 0) > 1 ? "s" : ""}`,
         dues.length && `${dues.length} due${dues.length > 1 ? "s" : ""}`,
         reminders.length && `${reminders.length} reminder${reminders.length > 1 ? "s" : ""}`,
         tasks.length && `${tasks.length} task${tasks.length > 1 ? "s" : ""}`,
@@ -455,6 +462,8 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
                 <div className="border-t border-line p-4">
                   {d.kind === "reminder" ? (
                     <ReminderEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "reminder", value: v } : x)))} />
+                  ) : d.kind === "list" ? (
+                    <ListDraftEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "list", value: v } : x)))} />
                   ) : d.kind === "due" ? (
                     <DueEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "due", value: v } : x)))} />
                   ) : d.kind === "task" ? (
@@ -481,6 +490,26 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ListDraftEditor({ value, onChange }: { value: ListDraft; onChange: (v: ListDraft) => void }) {
+  return (
+    <div className="grid gap-3">
+      <div>
+        <label className={label}>List</label>
+        <input className={field} value={value.list} onChange={(e) => onChange({ ...value, list: e.target.value })} />
+      </div>
+      <div>
+        <label className={label}>Items (one per line)</label>
+        <textarea
+          rows={Math.max(2, value.items.length)}
+          className={field}
+          value={value.items.join("\n")}
+          onChange={(e) => onChange({ ...value, items: e.target.value.split("\n") })}
+        />
+      </div>
     </div>
   );
 }
@@ -528,6 +557,20 @@ function DueEditor({ value, onChange }: { value: DueInput; onChange: (v: DueInpu
 }
 
 function DraftSummary({ d }: { d: Draft }) {
+  if (d.kind === "list") {
+    const items = d.value.items.filter((x) => x.trim());
+    return (
+      <>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-teal-500/15 text-teal-500">
+          <ListChecks className="h-5 w-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-medium">{items.join(", ")}</span>
+          <span className="block text-xs text-muted">Add to {d.value.list} list</span>
+        </span>
+      </>
+    );
+  }
   if (d.kind === "due") {
     const v = d.value;
     return (

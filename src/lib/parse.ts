@@ -3,6 +3,7 @@ import { z } from "zod";
 import { reminderInputSchema, type ReminderInput } from "./reminder-input";
 import { taskInputSchema, type TaskInput } from "./tasks";
 import { dueInputSchema, type DueInput } from "./moneyplus";
+import { listAddSchema, type ListAdd } from "./life";
 import { commandSchema, questionSchema, type Command, type Question } from "./assistant";
 import {
   CATEGORY_KEYWORDS,
@@ -18,6 +19,7 @@ const resultSchema = z.object({
   transactions: z.array(transactionInputSchema).max(30).default([]),
   tasks: z.array(taskInputSchema).max(30).default([]),
   dues: z.array(dueInputSchema).max(10).default([]),
+  listItems: z.array(listAddSchema).max(5).default([]),
   question: questionSchema.nullish(),
   commands: z.array(commandSchema).max(5).default([]),
 });
@@ -27,19 +29,20 @@ export type ParseResult = {
   transactions: TransactionInput[];
   tasks: TaskInput[];
   dues?: DueInput[];
+  listItems?: ListAdd[];
   question?: Question | null;
   commands?: Command[];
 };
 
 const hasContent = (d: z.infer<typeof resultSchema>) =>
-  Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.question || d.commands.length);
+  Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.listItems.length || d.question || d.commands.length);
 
 function systemPrompt(now = new Date()) {
   const ctx = localNowContext(now);
   return `You are a personal assistant. You turn a short note (typed or spoken, Indian English or Malayalam, amounts in rupees) into REMINDERS, TASKS and/or money TRANSACTIONS.
 Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.
 
-Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
+Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "listItems":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
 
 QUESTIONS: if they are ASKING about their own data, return only "question" (everything else empty):
 {"kind": "spend" | "income" | "agenda" | "find" | "tasks" | "balance" | "goals" | "dues" | "budget",
@@ -94,6 +97,9 @@ Each task:
 DUES = money someone owes you or you owe someone: "Arun owes me 600", "I owe Priya 200".
 Each due: {"person": name, "direction": "they_owe" | "i_owe", "amount": rupees, "note": what for or null, "remindOn": "YYYY-MM-DD" if they say when to collect/pay, else null}
 "Paid 1200 for dinner, Arun owes 600" = one expense of 1200 AND one due (Arun, they_owe, 600, "dinner").
+
+LIST ITEMS = things to add to a named list (shopping, packing, ideas, movies…): "add eggs and bread to shopping list", "put sunscreen on the packing list".
+Each: {"list": list name without the word "list" (e.g. "shopping"), "items": ["Eggs", "Bread"]}. These are NOT tasks.
 
 BANK / UPI SMS: if the text looks like a bank SMS ("debited", "credited", "A/c XX1234", "UPI Ref", "Avl Bal"), make ONE transaction: debited/spent/sent = expense, credited/received = income; amount from "Rs"/"INR"; merchant from the payee/VPA/"at …" name in plain words (e.g. "swiggy@icici" → "Swiggy"); method "upi" for UPI, "card" for card; date from the SMS if present. Ignore the balance amount.
 
@@ -398,8 +404,14 @@ export function parseLocally(text: string, now = new Date()): ParseResult {
     .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b)|,\s*(?=(?:\w+\s+owes\b|i\s+owe\b)))/i)
     .map((p) => p.replace(/^(?:also|then|plus)\s+/i, "").trim())
     .filter((p) => p.length > 2);
-  const result: ParseResult = { reminders: [], transactions: [], tasks: [], dues: [] };
+  const result: ParseResult = { reminders: [], transactions: [], tasks: [], dues: [], listItems: [] };
   for (const part of parts.length ? parts : [text]) {
+    const li = part.match(/^\s*(?:add|put)\s+(.+?)\s+(?:to|on|in)\s+(?:my\s+|the\s+)?([\w ]{1,30}?)\s+list\s*$/i);
+    if (li) {
+      const items = li[1].split(/\s*(?:,|\band\b|&)\s*/i).map((x) => x.trim()).filter(Boolean).map((x) => x[0].toUpperCase() + x.slice(1));
+      result.listItems!.push({ list: li[2].trim(), items });
+      continue;
+    }
     const owe = part.match(/^\s*(?:(\w[\w ]{0,30}?)\s+owes(?:\s+me)?|i\s+owe\s+(\w[\w ]{0,30}?))\s+(?:rs\.?|₹)?\s*([\d,]+)/i);
     if (owe) {
       result.dues!.push(

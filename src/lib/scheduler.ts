@@ -241,6 +241,8 @@ export async function completeOccurrence(reminderId: string, occurrenceAt: Date)
   if (r && !r.rrule) {
     await db().update(reminders).set({ status: "done", updatedAt: new Date() }).where(eq(reminders.id, reminderId));
   }
+  // e.g. a medicine dose lowers the tablet count.
+  if (r?.meta) await import("./life").then((m) => m.onReminderCompleted(r)).catch(() => null);
   return r;
 }
 

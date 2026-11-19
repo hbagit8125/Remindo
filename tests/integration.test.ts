@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -467,6 +467,65 @@ async function main() {
   const doBtn = (conf.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0];
   await call({ callback_query: { id: "cbx", data: doBtn.callback_data, from: { id: 42 }, message: { message_id: 32, chat: { id: 42 }, text: "Confirm" } } });
   assert.ok((await AS.answerQuestion({ kind: "find", keyword: "KSEB" })).text.startsWith("I couldn't"), "Telegram-confirmed delete ran");
+
+  // ---------------------------------------------------------------- Phase 5: life
+  const L = await import("../src/lib/life");
+  const expiry = F.shiftMonth(local(0).date.slice(0, 7), 2) + "-15";
+  const doc = await L.saveDocument({ kind: "vehicle_insurance", name: "TEST Activa insurance", expiryDate: expiry, renewalCost: 1800 });
+  const [docR] = await db().select().from(reminders).where(eq(reminders.id, doc!.reminderId!));
+  assert.equal(docR.title, "Renew TEST Activa insurance");
+  assert.deepEqual(docR.leadTimes, [43200, 10080, 1440, 0]);
+  const renewed = await L.renewDocument(doc!.id, expiry.replace(/^\d{4}/, (y) => String(Number(y) + 1)), 1750);
+  assert.equal(renewed!.reminderId, doc!.reminderId, "same reminder reused on renew");
+  const [docR2] = await db().select().from(reminders).where(eq(reminders.id, doc!.reminderId!));
+  assert.ok(docR2.dueAt > docR.dueAt, "renewal moved the reminder");
+
+  // People: birthday → yearly reminder, nextDate handles Feb 29.
+  assert.match(L.nextDate("02-29", new Date("2027-03-01T00:00:00Z")), /^2028-02-29$/);
+  assert.equal(L.nextDate("02-29", new Date("2026-12-01T00:00:00Z")), "2027-02-28");
+  const person = await L.savePerson({ name: "TEST Ammu", birthday: "01-05", birthYear: 1998, giftIdeas: "Books" });
+  const [bR] = await db().select().from(reminders).where(eq(reminders.id, person!.birthdayReminderId!));
+  assert.equal(bR.rrule?.startsWith("FREQ=YEARLY"), true);
+  assert.match(bR.notes || "", /Books/);
+  const ppl = await L.listPeople();
+  assert.ok(ppl[0].daysToBirthday !== null && ppl[0].turning! > 20);
+  await L.savePerson({ name: "TEST Ammu", birthday: null }, person!.id);
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, person!.birthdayReminderId!))).length, 0, "birthday reminder removed");
+
+  // Medicines: completing a dose lowers stock; one refill alert at threshold.
+  const med = await L.saveMedicine({ name: "TEST Vit D", dose: "1 tab", times: ["21:00", "09:00"], stock: 4, perDose: 1, refillAt: 3 });
+  assert.deepEqual(med!.times, ["09:00", "21:00"]);
+  assert.equal(med!.reminderIds.length, 2);
+  const emailsMed = sent.length;
+  await S.completeOccurrence(med!.reminderIds[0], new Date());
+  const { medicines } = await import("../src/db");
+  let [m1] = await db().select().from(medicines).where(eq(medicines.id, med!.id));
+  assert.equal(m1.stock, 3);
+  assert.ok(m1.refillAlertSentAt, "refill alert flagged");
+  assert.equal(sent.length, emailsMed + 1, "refill email sent once");
+  await S.completeOccurrence(med!.reminderIds[1], new Date());
+  assert.equal(sent.length, emailsMed + 1, "no second refill email");
+  await L.refillMedicine(med!.id, 30);
+  [m1] = await db().select().from(medicines).where(eq(medicines.id, med!.id));
+  assert.equal(m1.stock, 32);
+  assert.equal(m1.refillAlertSentAt, null);
+  await L.deleteMedicine(med!.id);
+
+  // Lists: offline parser + addToList creates the list once.
+  const pl = parseLocally("add eggs, bread and milk to my shopping list");
+  assert.deepEqual(pl.listItems, [{ list: "shopping", items: ["Eggs", "Bread", "Milk"] }]);
+  const a1 = await L.addToList("shopping", ["Eggs", "Bread"]);
+  const a2 = await L.addToList("Shopping list", ["Milk"]);
+  assert.equal(a1.list.id, a2.list.id, "same list reused");
+  assert.equal(a1.list.emoji, "🛒");
+  const full = await L.getList(a1.list.id);
+  assert.equal(full!.items.length, 3);
+  await call({ message: { message_id: 40, chat: { id: 42 }, text: "add sunscreen to packing list" } });
+  const lmsg = tgCalls.filter((c) => c.method === "sendMessage").at(-1)!;
+  assert.match(String(lmsg.body.text), /📝 packing list: sunscreen/i);
+  const save = (lmsg.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0];
+  await call({ callback_query: { id: "cbl", data: save.callback_data, from: { id: 42 }, message: { message_id: 41, chat: { id: 42 }, text: "x" } } });
+  assert.ok((await L.allLists()).find((x) => x.name === "Packing" && x.total === 1), "Telegram list add saved");
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

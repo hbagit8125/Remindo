@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api, useData } from "@/components/app/client";
 import { PageTitle } from "@/components/app/rows";
+import { LifeTiles } from "@/components/screens/LifeScreens";
 import { useToast } from "@/components/app/toast";
 import { logout, useTheme } from "@/components/app/AppShell";
 
@@ -215,6 +216,7 @@ export function MoreScreen() {
   return (
     <div>
       <PageTitle title="More" subtitle="Notifications, emails and app settings" />
+      <LifeTiles />
 
       <Group title="Where reminders reach you">
         <Row icon={<Smartphone className="h-[18px] w-[18px]" />} title="Phone notifications" desc={pushDesc[push.state]}>
