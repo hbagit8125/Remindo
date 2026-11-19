@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import { clsx } from "clsx";
-import { Download, Loader2, PieChart, Target, TrendingDown, TrendingUp } from "lucide-react";
-import { api, monthKey, monthLabel, refreshAll, useData } from "@/components/app/client";
+import { Download, PieChart, Target, TrendingDown, TrendingUp } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { monthKey, monthLabel, useData } from "@/components/app/client";
 import { Empty, PageTitle, Section, useNow } from "@/components/app/rows";
-import { useToast } from "@/components/app/toast";
-import { categoryMeta, EXPENSE_CATEGORIES, type Insights } from "@/components/types";
+import { BudgetSheet } from "@/components/app/BudgetSheet";
+import { categoryMeta, type Insights } from "@/components/types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
 import { BudgetBar } from "./HomeScreen";
 import { MonthSwitcher } from "./MoneyScreen";
@@ -14,11 +15,12 @@ import { MonthSwitcher } from "./MoneyScreen";
 export function InsightsScreen() {
   const now = useNow();
   const [month, setMonth] = useState(() => monthKey(new Date()));
-  const [editing, setEditing] = useState(false);
+  // /insights?budget=1 (from Home) opens the budget sheet straight away.
+  const params = useSearchParams();
+  const [editing, setEditing] = useState(() => params.get("budget") === "1");
   const { data } = useData<Insights>(`/api/insights?month=${month}`);
 
   const change = data && data.prevSpent ? ((data.spent - data.prevSpent) / data.prevSpent) * 100 : null;
-  const limit = data?.budgets[TOTAL_BUDGET];
 
   return (
     <div>
@@ -63,19 +65,14 @@ export function InsightsScreen() {
               <Stat label="Saved" value={data.income ? formatINR(data.income - data.spent) : "—"} tone={data.income - data.spent < 0 ? "bad" : undefined} />
               <Stat label="Daily avg" value={formatINR(Math.round(data.spent / daysElapsed(month, now) / 100) * 100)} />
             </div>
-            {limit ? (
-              <div className="mt-4">
-                <div className="mb-1.5 flex justify-between text-xs text-muted">
-                  <span>Monthly budget {formatINR(limit)}</span>
-                  <span>{Math.round((data.spent / limit) * 100)}%</span>
-                </div>
-                <BudgetBar spent={data.spent} limit={limit} />
-              </div>
-            ) : null}
           </div>
 
+          <BudgetCard data={data} month={month} now={now} onEdit={() => setEditing(true)} />
+
           {!data.spent ? (
-            <Empty icon={<PieChart className="h-6 w-6" />} title="No spending yet" text="Charts appear once you log some expenses this month." />
+            <div className="mb-6">
+              <Empty icon={<PieChart className="h-6 w-6" />} title="No spending yet" text="Charts appear once you log some expenses this month." />
+            </div>
           ) : (
             <div className="md:grid md:grid-cols-2 md:gap-5">
               <Section title="Where it went">
@@ -118,35 +115,84 @@ export function InsightsScreen() {
             </div>
           )}
 
-          <Section
-            title="Budgets"
-            right={
-              !editing && (
-                <button onClick={() => setEditing(true)} className="text-indigo-500">
-                  {Object.keys(data.budgets).length ? "Edit" : "Set up"}
-                </button>
-              )
-            }
-          >
-            {editing ? (
-              <BudgetEditor initial={data.budgets} categories={data.byCategory.map((c) => c.category)} onDone={() => setEditing(false)} />
-            ) : Object.keys(data.budgets).length ? (
-              <div className="card rounded-3xl p-5 text-sm text-muted">
-                <Target className="mb-2 h-5 w-5 text-indigo-500" />
-                {limit ? `Overall ${formatINR(limit)} a month` : "No overall limit"}
-                {Object.keys(data.budgets).filter((k) => k !== TOTAL_BUDGET).length
-                  ? ` · ${Object.keys(data.budgets).filter((k) => k !== TOTAL_BUDGET).length} category limits`
-                  : ""}
-                . You&apos;ll get an email at 80% and 100%.
-              </div>
-            ) : (
-              <button onClick={() => setEditing(true)} className="card w-full rounded-3xl p-5 text-left text-sm text-muted hover:bg-raised">
-                <Target className="mb-2 h-5 w-5 text-indigo-500" />
-                Set a monthly budget and Remindo will email you when you reach 80% and 100%.
-              </button>
-            )}
-          </Section>
         </>
+      )}
+      {editing && data && (
+        <BudgetSheet initial={data.budgets} spentByCategory={data.byCategory} onClose={() => setEditing(false)} />
+      )}
+    </div>
+  );
+}
+
+function BudgetCard({ data, month, now, onEdit }: { data: Insights; month: string; now: Date; onEdit: () => void }) {
+  const limit = data.budgets[TOTAL_BUDGET];
+  const catLimits = Object.entries(data.budgets).filter(([k]) => k !== TOTAL_BUDGET);
+
+  if (!limit && !catLimits.length) {
+    return (
+      <div className="card mb-6 flex items-center gap-4 rounded-3xl p-5">
+        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-indigo-500/15 text-indigo-500">
+          <Target className="h-6 w-6" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">No budget yet</p>
+          <p className="text-sm text-muted">Set a monthly limit. You&apos;ll get an email at 80% and 100%.</p>
+        </div>
+        <button onClick={onEdit} className="shrink-0 rounded-xl bg-fg px-4 py-2.5 text-sm font-semibold text-[var(--bg)] hover:opacity-90">
+          Set budget
+        </button>
+      </div>
+    );
+  }
+
+  const current = month === monthKey(now);
+  const [y, m] = month.split("-").map(Number);
+  const daysLeft = current ? new Date(Date.UTC(y, m, 0)).getUTCDate() - daysElapsed(month, now) : 0;
+  const spentFor = (c: string) => data.byCategory.find((x) => x.category === c)?.amount || 0;
+
+  return (
+    <div className="card mb-6 rounded-3xl p-5">
+      <div className="flex items-center justify-between">
+        <p className="flex items-center gap-2 text-sm font-medium text-muted">
+          <Target className="h-4 w-4 text-indigo-500" /> Budget
+        </p>
+        <button onClick={onEdit} className="rounded-lg border border-line px-3 py-1.5 text-xs font-medium hover:bg-raised">
+          Edit
+        </button>
+      </div>
+
+      {limit ? (
+        <div className="mt-3">
+          <p className={clsx("text-2xl font-semibold tabular-nums", data.spent > limit && "text-rose-500")}>
+            {data.spent <= limit ? `${formatINR(limit - data.spent)} left` : `${formatINR(data.spent - limit)} over`}
+          </p>
+          <p className="mb-2 text-xs text-muted">
+            {formatINR(data.spent)} of {formatINR(limit)}
+            {current && daysLeft > 0 && data.spent < limit ? ` · about ${formatINR(Math.floor((limit - data.spent) / daysLeft / 100) * 100)}/day for ${daysLeft} days` : ""}
+          </p>
+          <BudgetBar spent={data.spent} limit={limit} />
+        </div>
+      ) : null}
+
+      {catLimits.length > 0 && (
+        <div className={clsx("space-y-3", limit && "mt-5 border-t border-line pt-4")}>
+          {catLimits.map(([c, l]) => {
+            const sp = spentFor(c);
+            return (
+              <div key={c}>
+                <div className="mb-1 flex items-center justify-between text-sm">
+                  <span>
+                    {categoryMeta(c).emoji} {c}
+                  </span>
+                  <span className={clsx("tabular-nums text-xs", sp > l ? "text-rose-500" : "text-muted")}>
+                    {formatINR(sp)} / {formatINR(l)}
+                  </span>
+                </div>
+                <BudgetBar spent={sp} limit={l} />
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -242,76 +288,6 @@ function DailyBars({ month, byDay }: { month: string; byDay: { date: string; amo
         <span>1</span>
         <span>{Math.ceil(days / 2)}</span>
         <span>{days}</span>
-      </div>
-    </div>
-  );
-}
-
-function BudgetEditor({ initial, categories, onDone }: { initial: Record<string, number>; categories: string[]; onDone: () => void }) {
-  const { toast } = useToast();
-  const [vals, setVals] = useState<Record<string, string>>(() =>
-    Object.fromEntries(Object.entries(initial).map(([k, v]) => [k, String(v / 100)])),
-  );
-  const [saving, setSaving] = useState(false);
-  const list = [...new Set([...categories, ...Object.keys(initial).filter((k) => k !== TOTAL_BUDGET), ...EXPENSE_CATEGORIES])];
-
-  async function save() {
-    setSaving(true);
-    try {
-      await api("/api/budgets", {
-        method: "PUT",
-        json: { budgets: Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, Number(v) || 0])) },
-      });
-      toast({ message: "Budgets saved" });
-      refreshAll();
-      onDone();
-    } catch (e) {
-      toast({ message: (e as Error).message, tone: "error" });
-      setSaving(false);
-    }
-  }
-
-  const input = (k: string, placeholder: string) => (
-    <div className="relative w-32">
-      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">₹</span>
-      <input
-        type="number"
-        inputMode="numeric"
-        placeholder={placeholder}
-        value={vals[k] ?? ""}
-        onChange={(e) => setVals({ ...vals, [k]: e.target.value })}
-        className="w-full rounded-xl border border-line bg-raised py-2 pl-7 pr-2 text-right text-sm tabular-nums outline-none focus:border-indigo-400"
-      />
-    </div>
-  );
-
-  return (
-    <div className="card rounded-3xl p-5">
-      <div className="flex items-center justify-between gap-3 border-b border-line pb-4">
-        <div>
-          <p className="font-medium">Overall monthly budget</p>
-          <p className="text-xs text-muted">Leave empty for no limit</p>
-        </div>
-        {input(TOTAL_BUDGET, "30000")}
-      </div>
-      <p className="mb-2 mt-4 text-xs font-medium uppercase tracking-wider text-subtle">Per category (optional)</p>
-      <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
-        {list.map((c) => (
-          <div key={c} className="flex items-center justify-between gap-3">
-            <span className="text-sm">
-              {categoryMeta(c).emoji} {c}
-            </span>
-            {input(c, "—")}
-          </div>
-        ))}
-      </div>
-      <div className="mt-5 flex gap-2">
-        <button onClick={onDone} className="flex-1 rounded-xl border border-line py-2.5 text-sm text-muted hover:bg-raised">
-          Cancel
-        </button>
-        <button onClick={save} disabled={saving} className="flex flex-[2] items-center justify-center gap-2 rounded-xl bg-fg py-2.5 text-sm font-semibold text-[var(--bg)] disabled:opacity-50">
-          {saving && <Loader2 className="h-4 w-4 animate-spin" />} Save budgets
-        </button>
       </div>
     </div>
   );
