@@ -18,12 +18,22 @@ delete process.env.GROQ_API_KEY;
 
 const sent: { subject: string; html: string }[] = [];
 const tgCalls: { method: string; body: Record<string, unknown> }[] = [];
+const aiCalls: string[] = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
   if (String(url).includes("api.resend.com")) {
     const b = JSON.parse(String(init?.body));
     sent.push({ subject: b.subject, html: b.html });
     return new Response(JSON.stringify({ id: `email_${sent.length}` }), { status: 200, headers: { "content-type": "application/json" } });
+  }
+  if (String(url).includes("generativelanguage.googleapis.com")) {
+    aiCalls.push("gemini:" + String(url).split("/models/")[1].split(":")[0]);
+    return new Response(JSON.stringify({ error: { code: 503, message: "overloaded" } }), { status: 503 });
+  }
+  if (String(url).includes("api.anthropic.com")) {
+    aiCalls.push("claude:" + JSON.parse(String(init?.body)).model);
+    const text = '"reminders":[{"title":"Call mom","date":"2026-11-20","time":"19:00","recurrence":"none","interval":1,"priority":"normal"}],"transactions":[{"type":"expense","amount":50,"category":"Food","note":"Tea","date":"2026-11-19"}]}';
+    return new Response(JSON.stringify({ content: [{ type: "text", text }] }), { status: 200, headers: { "content-type": "application/json" } });
   }
   const tgMatch = String(url).match(/api\.telegram\.org\/bot[^/]+\/(\w+)/);
   if (tgMatch) {
@@ -260,6 +270,22 @@ async function main() {
   await reportError("test job", "boom");
   await reportError("test job", "boom again");
   assert.equal(sent.length, e1 + 1, "error alert rate-limited");
+
+  // 10. AI fallback chain: Gemini busy → backup Gemini busy → Claude.
+  const { parsePrompt } = await import("../src/lib/parse");
+  process.env.GEMINI_API_KEY = "test";
+  process.env.ANTHROPIC_API_KEY = "test";
+  const viaClaude = await parsePrompt("Call mom tomorrow 7pm and spent 50 on tea");
+  assert.equal(viaClaude.engine, "claude");
+  assert.deepEqual(aiCalls, ["gemini:gemini-flash-lite-latest", "gemini:gemini-flash-latest", "claude:claude-haiku-5-5"]);
+  assert.equal(viaClaude.reminders.length + viaClaude.transactions.length, 2);
+  delete process.env.ANTHROPIC_API_KEY;
+  const offline = await parsePrompt("Call mom tomorrow at 7pm and spent 50 on tea");
+  assert.equal(offline.engine, "local");
+  assert.equal(offline.reminders.length, 1, "offline splits the reminder");
+  assert.equal(offline.transactions.length, 1, "offline splits the expense");
+  assert.doesNotMatch(offline.warning || "", /\{|503/, "friendly warning, no raw error");
+  delete process.env.GEMINI_API_KEY;
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

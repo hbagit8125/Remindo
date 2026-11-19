@@ -77,6 +77,7 @@ export function useReminderActions() {
       const res = await post(i, "snooze", minutes);
       refreshAll();
       toast({ message: `Snoozed until ${res.snoozedUntil ? fmt.time.format(new Date(res.snoozedUntil)) : "later"}` });
+      return res.snoozedUntil ?? null;
     },
     async log(i: AgendaItem) {
       await post(i, "log");
@@ -93,6 +94,10 @@ export function useReminderActions() {
 export function ReminderItem({ i, showDay, now }: { i: AgendaItem; showDay?: boolean; now: Date }) {
   const a = useReminderActions();
   const [menu, setMenu] = useState(false);
+  // Show the new snooze time straight away instead of waiting for the list to reload.
+  const [snoozedLocal, setSnoozedLocal] = useState<string | null>(null);
+  const snoozedUntil = i.snoozedUntil || snoozedLocal;
+  const snooze = async (m: number) => setSnoozedLocal(await a.snooze(i, m));
   const menuRef = useRef<HTMLDivElement>(null);
   const d = new Date(i.occurrenceAt);
   const past = d < now && !i.done;
@@ -114,7 +119,7 @@ export function ReminderItem({ i, showDay, now }: { i: AgendaItem; showDay?: boo
   return (
     <SwipeRow
       right={i.done ? undefined : { label: "Done", icon: <Check className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => a.done(i) }}
-      left={i.done ? undefined : { label: "Snooze 1h", icon: <Clock className="h-5 w-5" />, className: "bg-indigo-500", onTrigger: () => a.snooze(i, 60) }}
+      left={i.done ? undefined : { label: "Snooze 1h", icon: <Clock className="h-5 w-5" />, className: "bg-indigo-500", onTrigger: () => snooze(60) }}
     >
       <div
         className={clsx(
@@ -153,7 +158,7 @@ export function ReminderItem({ i, showDay, now }: { i: AgendaItem; showDay?: boo
                 {i.paid ? " · paid" : ""}
               </span>
             )}
-            {i.snoozedUntil && <span className="text-indigo-500">snoozed → {fmt.time.format(new Date(i.snoozedUntil))}</span>}
+            {snoozedUntil && !i.done && <span className="text-indigo-500">snoozed → {fmt.time.format(new Date(snoozedUntil))}</span>}
           </div>
         </button>
 
@@ -182,7 +187,7 @@ export function ReminderItem({ i, showDay, now }: { i: AgendaItem; showDay?: boo
                       key={l}
                       onClick={() => {
                         setMenu(false);
-                        a.snooze(i, m);
+                        snooze(m);
                       }}
                       className="block w-full px-3 py-2 text-left text-sm hover:bg-raised"
                     >

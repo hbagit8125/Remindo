@@ -57,7 +57,7 @@ export const CATEGORY_KEYWORDS: [RegExp, string][] = [
   [/\b(petrol|diesel|fuel)\b/i, "Fuel"],
   [/\b(uber|ola|rapido|auto|metro|bus|train|cab|taxi|parking|toll)\b/i, "Transport"],
   [/\b(grocer(y|ies)|vegetables?|fruits?|milk|bigbasket|blinkit|zepto|instamart|dmart)\b/i, "Groceries"],
-  [/\b(lunch|dinner|breakfast|snacks?|coffee|tea|chai|zomato|swiggy|restaurant|food|pizza|biryani)\b/i, "Food"],
+  [/\b(lunch|dinner|breakfast|snacks?|coffee|tea|chai|zomato|swiggy|restaurant|food|pizza|biryani|candy|sweets?|chocolate|juice|ice ?cream|bakery)\b/i, "Food"],
   [/\b(netflix|spotify|prime|hotstar|youtube premium|subscription|icloud|chatgpt)\b/i, "Subscriptions"],
   [/\b(electricity|water bill|wifi|broadband|internet|recharge|mobile bill|gas bill|bill)\b/i, "Bills"],
   [/\b(doctor|medicine|pharmacy|hospital|medical|gym)\b/i, "Health"],

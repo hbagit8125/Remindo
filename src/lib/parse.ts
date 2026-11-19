@@ -63,22 +63,71 @@ function extractJson(text: string) {
   return JSON.parse(text.slice(start, end + 1));
 }
 
-async function withGemini(text: string): Promise<unknown> {
+/** fetch that gives up after `ms` so a slow AI never leaves you staring at "Understanding…". */
+async function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw new Error(`timed out after ${ms / 1000}s`);
+    throw e;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+export const GEMINI_PRIMARY = () => process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
+export const GEMINI_BACKUP = () => process.env.GEMINI_BACKUP_MODEL || "gemini-flash-latest";
+
+async function withGemini(text: string, model: string, timeoutMs: number): Promise<unknown> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY not set");
-  const model = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt() }] },
-      contents: [{ role: "user", parts: [{ text }] }],
-      generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
-    }),
-  });
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const res = await fetchWithTimeout(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt() }] },
+        contents: [{ role: "user", parts: [{ text }] }],
+        generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
+      }),
+    },
+    timeoutMs,
+  );
+  if (!res.ok) throw new Error(`Gemini ${model} ${res.status}`);
   const json = await res.json();
   const out = json?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "").join("") || "";
+  return extractJson(out);
+}
+
+/** Paid backup (Claude Haiku). Only runs when ANTHROPIC_API_KEY is set and Gemini has failed. */
+async function withClaude(text: string): Promise<unknown> {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error("ANTHROPIC_API_KEY not set");
+  const res = await fetchWithTimeout(
+    "https://api.anthropic.com/v1/messages",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: process.env.CLAUDE_MODEL || "claude-haiku-5-5",
+        max_tokens: 1500,
+        temperature: 0.1,
+        system: systemPrompt(),
+        messages: [
+          { role: "user", content: text },
+          // Prefill so the reply starts as JSON.
+          { role: "assistant", content: "{" },
+        ],
+      }),
+    },
+    12000,
+  );
+  if (!res.ok) throw new Error(`Claude ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  const json = (await res.json()) as { content?: { type: string; text?: string }[] };
+  const out = "{" + (json.content || []).map((c) => c.text || "").join("");
   return extractJson(out);
 }
 
@@ -142,7 +191,7 @@ export function parseTransactionLocally(text: string, now = new Date()): Transac
 
   const note = text
     .replace(m[0], " ")
-    .replace(/\b(spent|spend|paid|pay|bought|for|on|at|in|via|by|using|yesterday|today|upi|gpay|phonepe|paytm|card|cash|rs\.?|rupees|inr|received|credited|got)\b/gi, " ")
+    .replace(/\b(spent|spend|paid|pay|bought|for|on|at|in|via|by|using|yesterday|today|upi|gpay|phonepe|paytm|card|cash|rs\.?|rupees?|inr|received|credited|got)\b/gi, " ")
     .replace(/₹/g, "")
     .replace(/\s+/g, " ")
     .trim()
@@ -160,9 +209,18 @@ export function parseTransactionLocally(text: string, now = new Date()): Transac
 
 /** No-AI fallback: chrono-node for the date, keywords for repetition and priority. */
 export function parseLocally(text: string, now = new Date()): ParseResult {
-  const tx = parseTransactionLocally(text, now);
-  if (tx) return { reminders: [], transactions: [tx] };
-  return { reminders: parseReminderLocally(text, now), transactions: [] };
+  // "Call mom at 7, and spent 50 on tea" → handle each part separately.
+  const parts = text
+    .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b))/i)
+    .map((p) => p.replace(/^(?:also|then|plus)\s+/i, "").trim())
+    .filter((p) => p.length > 2);
+  const result: ParseResult = { reminders: [], transactions: [] };
+  for (const part of parts.length ? parts : [text]) {
+    const tx = parseTransactionLocally(part, now);
+    if (tx) result.transactions.push(tx);
+    else result.reminders.push(...parseReminderLocally(part, now));
+  }
+  return result;
 }
 
 function parseReminderLocally(text: string, now: Date): ReminderInput[] {
@@ -223,27 +281,38 @@ function parseReminderLocally(text: string, now: Date): ReminderInput[] {
   ];
 }
 
+/**
+ * AI chain, cheapest first: Gemini (free) → a second Gemini model (free, used
+ * when the first is busy) → Claude Haiku (paid, only if a key is set) → Groq
+ * (if a key is set) → the offline parser. Each step has a time limit so the
+ * whole thing stays quick even when Google is overloaded.
+ */
 export async function parsePrompt(text: string): Promise<ParseResult & { engine: string; warning?: string }> {
   const errors: string[] = [];
-  for (const [engine, fn] of [
-    ["gemini", withGemini],
-    ["groq", withGroq],
-  ] as const) {
+  const chain: [string, () => Promise<unknown>][] = [
+    ["gemini", () => withGemini(text, GEMINI_PRIMARY(), 7000)],
+    ["gemini-backup", () => withGemini(text, GEMINI_BACKUP(), 7000)],
+  ];
+  if (process.env.ANTHROPIC_API_KEY) chain.push(["claude", () => withClaude(text)]);
+  if (process.env.GROQ_API_KEY) chain.push(["groq", () => withGroq(text)]);
+
+  for (const [engine, fn] of chain) {
     try {
-      const raw = await fn(text);
+      const raw = await fn();
       const parsed = resultSchema.safeParse(raw);
       if (parsed.success && (parsed.data.reminders.length || parsed.data.transactions.length)) {
         return { ...parsed.data, engine };
       }
       errors.push(`${engine}: ${parsed.success ? "nothing found" : parsed.error.issues[0]?.message}`);
     } catch (e) {
-      errors.push((e as Error).message);
+      errors.push(`${engine}: ${(e as Error).message}`);
     }
   }
+  console.warn("[remindo:parse] all AI engines failed:", errors.join(" | "));
   return {
     ...parseLocally(text),
     engine: "local",
-    warning: `AI unavailable, used the simple parser. Check the details. (${errors.join("; ").slice(0, 200)})`,
+    warning: "The AI is busy right now, so I used the simple parser. Please check the details before saving.",
   };
 }
 
@@ -254,10 +323,10 @@ export async function parsePrompt(text: string): Promise<ParseResult & { engine:
 export async function transcribeAudio(audio: Buffer, mimeType = "audio/ogg"): Promise<string> {
   const errors: string[] = [];
   const key = process.env.GEMINI_API_KEY;
-  if (key) {
+  for (const model of key ? [GEMINI_PRIMARY(), GEMINI_BACKUP()] : []) {
+    if (!key) break;
     try {
-      const model = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      const res = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify({
@@ -274,8 +343,8 @@ export async function transcribeAudio(audio: Buffer, mimeType = "audio/ogg"): Pr
           ],
           generationConfig: { temperature: 0 },
         }),
-      });
-      if (!res.ok) throw new Error(`Gemini ${res.status}`);
+      }, 20000);
+      if (!res.ok) throw new Error(`Gemini ${model} ${res.status}`);
       const json = await res.json();
       const text = json?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text || "").join("").trim();
       if (text) return text;
