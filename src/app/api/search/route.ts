@@ -50,7 +50,7 @@ export async function GET(req: Request) {
     db().select().from(documents).where(or(ilike(documents.name, like), ilike(documents.number, like), ilike(documents.notes, like))).limit(10),
     db().select().from(dues).where(or(ilike(dues.person, like), ilike(dues.note, like))).limit(10),
     db().select().from(medicines).where(ilike(medicines.name, like)).limit(10),
-    db().select().from(goals).where(ilike(goals.name, like)).limit(10),
+    db().select().from(goals).where(and(eq(goals.archived, false), ilike(goals.name, like))).limit(10),
   ]);
   const other = [
     ...ls.map((l) => ({ id: l.id, emoji: l.emoji || (l.kind === "note" ? "🗒️" : "📝"), title: l.name, sub: l.kind === "note" ? "Note" : "List", href: `/lists?id=${l.id}` })),
