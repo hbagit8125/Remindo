@@ -144,11 +144,35 @@ export const CATEGORY_META: Record<string, { emoji: string; color: string }> = {
 };
 
 const FALLBACK = ["#f97316", "#06b6d4", "#a855f7", "#84cc16", "#f43f5e", "#3b82f6", "#eab308", "#14b8a6"];
+/** Emojis for your own categories. Kept in localStorage so lists show them straight away. */
+const CUSTOM_EMOJI: Record<string, string> = (() => {
+  try {
+    return typeof window === "undefined" ? {} : JSON.parse(localStorage.getItem("customCategories") || "{}");
+  } catch {
+    return {};
+  }
+})();
+
+export function registerCustomCategories(list: { name: string; emoji: string }[]) {
+  for (const k of Object.keys(CUSTOM_EMOJI)) delete CUSTOM_EMOJI[k];
+  for (const c of list) CUSTOM_EMOJI[c.name] = c.emoji;
+  try {
+    localStorage.setItem("customCategories", JSON.stringify(CUSTOM_EMOJI));
+  } catch {}
+}
+
+export type CategoryData = {
+  expense: string[];
+  income: string[];
+  custom: { name: string; emoji: string; type: "expense" | "income" }[];
+  hidden: string[];
+};
+
 export function categoryMeta(c: string) {
   if (CATEGORY_META[c]) return CATEGORY_META[c];
   let h = 0;
   for (const ch of c) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return { emoji: "🏷️", color: FALLBACK[h % FALLBACK.length] };
+  return { emoji: CUSTOM_EMOJI[c] || "🏷️", color: FALLBACK[h % FALLBACK.length] };
 }
 
 export const METHOD_LABEL: Record<Method, string> = { upi: "UPI", card: "Card", cash: "Cash", bank: "Bank" };

@@ -15,7 +15,7 @@ const NAV = [
   { href: "/", label: "Home", icon: Home, match: ["/"] },
   { href: "/plan", label: "Plan", icon: CalendarCheck, match: ["/plan", "/reminders"] },
   { href: "/expenses", label: "Money", icon: Wallet, match: ["/expenses", "/insights", "/accounts", "/goals", "/dues"] },
-  { href: "/more", label: "More", icon: LayoutGrid, match: ["/more", "/life", "/lists"] },
+  { href: "/more", label: "More", icon: LayoutGrid, match: ["/more", "/life", "/lists", "/categories"] },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

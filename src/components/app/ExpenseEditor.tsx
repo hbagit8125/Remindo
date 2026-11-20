@@ -1,19 +1,19 @@
 "use client";
 
 import { clsx } from "clsx";
-import { ArrowRight } from "lucide-react";
+import { useState } from "react";
+import { ArrowRight, Plus } from "lucide-react";
 import {
   ACCOUNT_META,
   categoryMeta,
-  EXPENSE_CATEGORIES,
-  INCOME_CATEGORIES,
   METHOD_LABEL,
   type Account,
   type Method,
   type TransactionInput,
 } from "../types";
 import { field, label } from "./ReminderEditor";
-import { useData } from "./client";
+import { api, useCategories, useData } from "./client";
+import { useToast } from "./toast";
 
 function AccountChips({
   accounts,
@@ -68,7 +68,8 @@ export function ExpenseEditor({
   const accounts = acc?.accounts || [];
   const income = value.type === "income";
   const transfer = value.type === "transfer";
-  const base = income ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+  const catData = useCategories();
+  const base = income ? catData.income : catData.expense;
   const cats = [...base, ...extraCategories.filter((c) => !base.includes(c))];
   if (value.category && !cats.includes(value.category) && !transfer) cats.push(value.category);
 
@@ -158,6 +159,13 @@ export function ExpenseEditor({
                 </button>
               );
             })}
+            <NewCategory
+              type={income ? "income" : "expense"}
+              onAdded={(n) => {
+                catData.reload();
+                set("category", n);
+              }}
+            />
           </div>
         </div>
       )}
@@ -218,6 +226,83 @@ export function ExpenseEditor({
           <AccountChips accounts={accounts} value={value.accountId} onChange={(id) => set("accountId", id)} />
         </div>
       )}
+    </div>
+  );
+}
+
+const EMOJI_CHOICES = ["🏷️", "🐶", "🏋️", "☕", "🍺", "💇", "🧒", "🚗", "🏍️", "📱", "💡", "🎮", "⚽", "🙏", "🧹", "🪴", "💄", "🎓", "🏥", "💰"];
+
+/** "＋ New" chip that turns into a small form for adding your own category. */
+function NewCategory({ type, onAdded }: { type: "expense" | "income"; onAdded: (name: string) => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [emoji, setEmoji] = useState("🏷️");
+  const [busy, setBusy] = useState(false);
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1 rounded-full border border-dashed border-line px-3 py-1.5 text-xs font-medium text-muted hover:bg-raised hover:text-fg"
+      >
+        <Plus className="h-3.5 w-3.5" /> New
+      </button>
+    );
+  }
+  const add = async () => {
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api<{ category: { name: string } }>("/api/categories", { method: "POST", json: { name, emoji, type } });
+      toast({ message: `Added ${emoji} ${r.category.name}` });
+      onAdded(r.category.name);
+      setOpen(false);
+      setName("");
+      setEmoji("🏷️");
+    } catch (e) {
+      toast({ message: (e as Error).message, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-1 min-w-0 max-w-full basis-full overflow-hidden rounded-2xl border border-line bg-raised/50 p-3">
+      <div className="mb-2 flex flex-wrap gap-1">
+        {EMOJI_CHOICES.map((e) => (
+          <button
+            key={e}
+            type="button"
+            onClick={() => setEmoji(e)}
+            className={clsx("grid h-8 w-8 shrink-0 place-items-center rounded-lg text-base", emoji === e ? "bg-surface ring-2 ring-indigo-400" : "hover:bg-surface")}
+            aria-label={`Emoji ${e}`}
+          >
+            {e}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input
+          autoFocus
+          className={clsx(field, "min-w-0 flex-1")}
+          placeholder={type === "income" ? "e.g. Rent received" : "e.g. Pet care"}
+          maxLength={30}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <button type="button" disabled={busy || !name.trim()} onClick={add} className="rounded-xl bg-indigo-500 px-4 text-sm font-semibold text-white disabled:opacity-50">
+          Add
+        </button>
+        <button type="button" onClick={() => setOpen(false)} className="rounded-xl px-2 text-sm text-muted hover:text-fg">
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }

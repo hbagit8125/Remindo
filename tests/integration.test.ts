@@ -549,6 +549,39 @@ async function main() {
   assert.equal(merged[0].id, "spending");
   assert.ok(!merged.some((w) => w.id === "gone") && merged.some((w) => w.id === "life"), "unknown dropped, new widgets appended");
 
+  // Snooze "until" a date/time, not a fixed 60 minutes.
+  const A2 = await import("../src/lib/assistant");
+  const snAt = new Date("2026-11-20T08:15:00Z"); // 1:45pm IST
+  assert.equal(A2.snoozeMinutes({ date: "2026-11-21", time: "10:00" }, snAt), 20 * 60 + 15);
+  assert.equal(A2.snoozeMinutes({ time: "10:00" }, snAt), 20 * 60 + 15, "past time today → tomorrow");
+  assert.equal(A2.snoozeMinutes({ minutes: 15 }, snAt), 15);
+
+  // Your own categories: add, rename (entries/budgets/favourites follow), hide built-in, delete → Other.
+  const CAT = await import("../src/lib/categories");
+  await CAT.addCategory({ name: "pet care", emoji: "🐶", type: "expense" });
+  await assert.rejects(() => CAT.addCategory({ name: "Pet Care", emoji: "🐶", type: "expense" }), /already exists/);
+  let cats = await CAT.getCategories();
+  assert.ok(cats.expense.includes("Pet care") && cats.expense.at(-1) === "Other", "custom added before Other");
+  const { createTransactions: ct2 } = await import("../src/lib/create");
+  await ct2([{ type: "expense", amount: 800, category: "Pet care", note: "Dog food", date: local(0).date }]);
+  const { budgets: bT, favourites: fT } = await import("../src/db");
+  await db().insert(bT).values({ category: "Pet care", amountPaise: 300000 });
+  await db().insert(fT).values({ label: "Dog food", payload: { type: "expense", amount: 800, category: "Pet care" } });
+  await CAT.updateCategory("Pet care", { name: "Pets", emoji: "🐾" });
+  assert.equal((await db().select().from(transactions).where(eq(transactions.note, "Dog food")))[0].category, "Pets");
+  assert.equal((await db().select().from(bT).where(eq(bT.category, "Pets"))).length, 1);
+  assert.equal(((await db().select().from(fT).where(eq(fT.label, "Dog food")))[0].payload as { category: string }).category, "Pets");
+  assert.match(await CAT.categoryHint(), /Pets/);
+  await CAT.setHidden("Fuel", true);
+  cats = await CAT.getCategories();
+  assert.ok(!cats.expense.includes("Fuel") && cats.hidden.includes("Fuel"));
+  await assert.rejects(() => CAT.setHidden("Other", true));
+  await CAT.addCategory({ name: "Fuel", emoji: "⛽", type: "expense" }); // re-adding a hidden built-in shows it again
+  assert.ok((await CAT.getCategories()).expense.includes("Fuel"));
+  await CAT.deleteCategory("Pets");
+  assert.equal((await db().select().from(transactions).where(eq(transactions.note, "Dog food")))[0].category, "Other");
+  assert.equal((await db().select().from(bT).where(eq(bT.category, "Pets"))).length, 0);
+
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
 
