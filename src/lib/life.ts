@@ -1,3 +1,4 @@
+import { isoDay } from "./day";
 import { and, asc, desc, eq, ilike, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, documents, lists, listItems, medicines, people, reminders, type Reminder } from "@/db";
@@ -7,8 +8,15 @@ import { createTransactions } from "./create";
 import { fmtLocal } from "./time";
 import { formatINR, toPaise } from "./money";
 
-const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const monthDay = z.string().regex(/^\d{2}-\d{2}$/, "use MM-DD");
+const day = isoDay();
+const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const monthDay = z
+  .string()
+  .regex(/^\d{2}-\d{2}$/, "use MM-DD")
+  .refine((v) => {
+    const [m, d] = v.split("-").map(Number);
+    return m >= 1 && m <= 12 && d >= 1 && d <= DAYS_IN_MONTH[m - 1];
+  }, "That date doesn't exist");
 
 /** Create or replace the reminder behind a document/person/medicine. */
 async function upsertReminder(id: string | null, input: ReminderInput, meta?: Record<string, unknown>) {
@@ -41,6 +49,17 @@ async function deleteReminder(id: string | null) {
 // ------------------------------------------------------------- documents & renewals
 
 export const DOC_KINDS = ["vehicle_insurance", "puc", "licence", "passport", "health_insurance", "rc", "subscription", "other"] as const;
+/** Which money category a renewal is filed under. */
+const RENEWAL_CATEGORY: Record<string, string> = {
+  vehicle_insurance: "Transport",
+  puc: "Transport",
+  licence: "Transport",
+  rc: "Transport",
+  health_insurance: "Health",
+  subscription: "Subscriptions",
+  passport: "Travel",
+};
+
 export const documentInputSchema = z.object({
   kind: z.enum(DOC_KINDS).default("other"),
   name: z.string().trim().min(1).max(80),
@@ -100,7 +119,7 @@ export async function renewDocument(id: string, newExpiry: string, cost: number 
   );
   if (cost && cost > 0) {
     await createTransactions([
-      { type: "expense", amount: cost, category: cur.kind.includes("insurance") ? "Bills" : "Other", note: `Renewed ${cur.name}`, date: fmtLocal(now, "yyyy-MM-dd") },
+      { type: "expense", amount: cost, category: RENEWAL_CATEGORY[cur.kind] || "Bills", note: `Renewed ${cur.name}`, date: fmtLocal(now, "yyyy-MM-dd") },
     ]);
   }
   return d;
@@ -246,7 +265,8 @@ export async function saveMedicine(input: MedicineInput, id?: string, now = new 
         null,
         {
           title: `💊 ${input.name}${input.dose ? ` · ${input.dose}` : ""}`,
-          date: fmtLocal(now, "yyyy-MM-dd"),
+          // Start today if this dose time is still ahead, otherwise tomorrow (no instant "missed" dose).
+          date: t > fmtLocal(now, "HH:mm") ? fmtLocal(now, "yyyy-MM-dd") : fmtLocal(new Date(now.getTime() + 86400000), "yyyy-MM-dd"),
           time: t,
           recurrence: "daily",
           interval: 1,
@@ -314,6 +334,13 @@ export const listInputSchema = z.object({
   name: z.string().trim().min(1).max(60),
   emoji: z.string().max(8).nullish(),
   kind: z.enum(["list", "note"]).default("list"),
+  body: z.string().max(20000).nullish(),
+  pinned: z.boolean().optional(),
+});
+/** Edits never change a note into a list (no defaults here). */
+export const listPatchSchema = z.object({
+  name: z.string().trim().min(1).max(60).optional(),
+  emoji: z.string().max(8).nullish(),
   body: z.string().max(20000).nullish(),
   pinned: z.boolean().optional(),
 });

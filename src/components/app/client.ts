@@ -129,7 +129,14 @@ const dayKeyFmt = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeri
 export const fmt = {
   time: f({ hour: "numeric", minute: "2-digit", hour12: true }),
   dayLong: f({ weekday: "long", day: "numeric", month: "short" }),
-  dayShort: f({ weekday: "short", day: "numeric", month: "short" }),
+  /** "Fri, 24 Dec", with the year added when it isn't this year. */
+  dayShort: {
+    format: (d: Date) =>
+      (dayKeyFmt.format(d).slice(0, 4) !== dayKeyFmt.format(new Date()).slice(0, 4)
+        ? f({ weekday: "short", day: "numeric", month: "short", year: "numeric" })
+        : f({ weekday: "short", day: "numeric", month: "short" })
+      ).format(d),
+  },
   dayNum: f({ day: "numeric", month: "short" }),
   month: f({ month: "long", year: "numeric" }),
   hour: new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "numeric", hourCycle: "h23" }),

@@ -90,7 +90,7 @@ export function BudgetSheet({
               type="number"
               inputMode="numeric"
               autoFocus={!hasAny}
-              placeholder="30000"
+              placeholder="No overall limit"
               value={total}
               onChange={(e) => setTotal(e.target.value)}
               className="w-52 bg-transparent text-center text-5xl font-semibold tracking-tight outline-none placeholder:text-subtle"

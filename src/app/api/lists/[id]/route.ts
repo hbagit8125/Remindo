@@ -1,7 +1,7 @@
 import { connection, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db, lists } from "@/db";
-import { getList, listInputSchema } from "@/lib/life";
+import { getList, listPatchSchema } from "@/lib/life";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -14,7 +14,7 @@ export async function GET(_req: Request, { params }: Ctx) {
 
 export async function PATCH(req: Request, { params }: Ctx) {
   const { id } = await params;
-  const p = listInputSchema.partial().safeParse(await req.json().catch(() => null));
+  const p = listPatchSchema.safeParse(await req.json().catch(() => null));
   if (!p.success) return NextResponse.json({ error: p.error.issues[0]?.message }, { status: 400 });
   const [l] = await db()
     .update(lists)

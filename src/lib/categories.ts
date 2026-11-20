@@ -110,5 +110,18 @@ export async function categoryHint() {
   if (!s.custom.length) return "";
   const ex = s.custom.filter((c) => c.type === "expense").map((c) => c.name);
   const inc = s.custom.filter((c) => c.type === "income").map((c) => c.name);
-  return `\nThe user also has their own categories. Prefer them when they fit:${ex.length ? ` expenses: ${ex.join(", ")}.` : ""}${inc.length ? ` income: ${inc.join(", ")}.` : ""}`;
+  const q = (l: string[]) => l.map((n) => JSON.stringify(n)).join(", ");
+  return `\nExtra categories the user created (use one ONLY when it clearly matches, else use the normal list):${ex.length ? ` expense ${q(ex)}.` : ""}${inc.length ? ` income ${q(inc)}.` : ""} Category values must be exactly one name, never a label like "expenses: X".`;
+}
+
+/**
+ * Make sure a category is one the app knows: fixes case, strips stray labels
+ * ("expenses: Fuel" → "Fuel"), and falls back to "Other". Transfers keep "Transfer".
+ */
+export async function normalizeCategory(raw: string | null | undefined, type: "expense" | "income" | "transfer") {
+  if (type === "transfer") return "Transfer";
+  const s = await load();
+  const known = [...DEFAULT_CATEGORIES, ...INCOME_CATEGORIES, ...s.custom.map((c) => c.name), "Refund"];
+  const clean = (raw || "").replace(/^\s*(expenses?|income|category)\s*:\s*/i, "").trim();
+  return known.find((k) => k.toLowerCase() === clean.toLowerCase()) || "Other";
 }

@@ -14,7 +14,18 @@ function nextSaturday() {
 }
 
 /** Editable fields for a task (to-do without a clock time). */
-export function TaskEditor({ value, onChange, autoFocus }: { value: TaskInput; onChange: (v: TaskInput) => void; autoFocus?: boolean }) {
+export function TaskEditor({
+  value,
+  onChange,
+  autoFocus,
+  onSubmit,
+}: {
+  value: TaskInput;
+  onChange: (v: TaskInput) => void;
+  autoFocus?: boolean;
+  /** Called when Enter is pressed in the title box. */
+  onSubmit?: () => void;
+}) {
   const set = <K extends keyof TaskInput>(k: K, v: TaskInput[K]) => onChange({ ...value, [k]: v });
   const [quick] = useState<[string, string | null][]>(() => [
     ["No date", null],
@@ -37,22 +48,35 @@ export function TaskEditor({ value, onChange, autoFocus }: { value: TaskInput; o
           autoFocus={autoFocus}
           placeholder="e.g. Buy milk, Finish report"
           value={value.title}
+          maxLength={200}
           onChange={(e) => set("title", e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && onSubmit) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
         />
       </div>
 
       <button
         type="button"
+        role="switch"
+        aria-checked={value.focus}
         onClick={() => set("focus", !value.focus)}
         className={clsx(
           "flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition",
           value.focus ? "border-amber-400 bg-amber-500/10" : "border-line hover:bg-raised",
         )}
       >
-        <Star className={clsx("h-5 w-5", value.focus ? "fill-amber-400 text-amber-400" : "text-subtle")} />
-        <span>
+        <Star className={clsx("h-5 w-5 shrink-0", value.focus ? "fill-amber-400 text-amber-400" : "text-subtle")} />
+        <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium">Add to today&apos;s focus</span>
           <span className="block text-xs text-muted">Shows at the top of Home. If unfinished, it carries over to tomorrow.</span>
+        </span>
+        {/* A clear on/off switch so it's obvious whether it's on. */}
+        <span className={clsx("relative h-6 w-11 shrink-0 rounded-full transition", value.focus ? "bg-amber-400" : "bg-line")}>
+          <span className={clsx("absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all", value.focus ? "left-[22px]" : "left-0.5")} />
         </span>
       </button>
 

@@ -1,3 +1,4 @@
+import { isoDay } from "./day";
 import { z } from "zod";
 
 export const DEFAULT_CATEGORIES = [
@@ -34,7 +35,7 @@ export const transactionInputSchema = z.object({
   note: z.string().trim().max(500).nullish(),
   merchant: z.string().trim().max(100).nullish(),
   method: z.enum(METHODS).nullish(),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+  date: isoDay(),
   /** Account/wallet id (optional). For transfers: the "from" account. */
   accountId: z.string().uuid().nullish(),
   /** Transfers only: the account receiving the money. */

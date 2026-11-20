@@ -25,7 +25,7 @@ export function inputToTxRow(i: TransactionInput) {
     category: i.category,
     note: i.note || null,
     merchant: i.merchant || null,
-    method: i.method || null,
+    method: i.type === "transfer" ? null : i.method || null,
     date: i.date,
     accountId: i.accountId || null,
     toAccountId: i.type === "transfer" ? i.toAccountId || null : null,

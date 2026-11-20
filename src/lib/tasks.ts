@@ -1,9 +1,10 @@
+import { isoDay } from "./day";
 import { and, desc, eq, gte, lte, or } from "drizzle-orm";
 import { z } from "zod";
 import { db, tasks, type Task } from "@/db";
 import { fmtLocal, localDayBounds } from "./time";
 
-const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD");
+const day = isoDay();
 
 /** Editable shape of a task (AI parser, Telegram, the Task form). */
 export const taskInputSchema = z.object({

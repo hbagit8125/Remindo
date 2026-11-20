@@ -249,7 +249,7 @@ export function MoreScreen() {
           title="Telegram"
           desc={
             tg.connected
-              ? `Connected${tg.chatName ? ` as ${tg.chatName}` : ""}${tg.botUsername ? ` · @${tg.botUsername}` : ""}`
+              ? `Connected${tg.chatName && /[\p{L}\p{N}]/u.test(tg.chatName) ? ` as ${tg.chatName}` : ""}${tg.botUsername ? ` · @${tg.botUsername}` : ""}`
               : waitingTg
                 ? "Waiting for you to tap Start in Telegram…"
                 : "Reminders with Done/Snooze buttons, and add things by text or voice note."
