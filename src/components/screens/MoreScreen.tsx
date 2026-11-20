@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { clsx } from "clsx";
 import {
@@ -14,6 +15,7 @@ import {
   Send,
   Smartphone,
   Sun,
+  Tags,
 } from "lucide-react";
 import { api, useData } from "@/components/app/client";
 import { PageTitle } from "@/components/app/rows";
@@ -345,6 +347,9 @@ export function MoreScreen() {
         <Row icon={theme.dark ? <Moon className="h-[18px] w-[18px]" /> : <Sun className="h-[18px] w-[18px]" />} title="Dark mode">
           <Toggle label="Dark mode" on={theme.dark} onChange={() => theme.toggle()} />
         </Row>
+        <Link href="/categories" className="block hover:bg-raised">
+          <Row icon={<Tags className="h-[18px] w-[18px]" />} title="Categories" desc="Add your own, rename, hide" />
+        </Link>
         <a download href="/api/transactions/export" className="block hover:bg-raised">
           <Row icon={<Download className="h-[18px] w-[18px]" />} title="Export money data" desc="CSV for Excel / Google Sheets" />
         </a>

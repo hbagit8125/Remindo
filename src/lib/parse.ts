@@ -37,10 +37,13 @@ export type ParseResult = {
 const hasContent = (d: z.infer<typeof resultSchema>) =>
   Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.listItems.length || d.question || d.commands.length);
 
+/** Your own categories, loaded once per request before the AI is called. */
+let categoryExtra = "";
+
 function systemPrompt(now = new Date()) {
   const ctx = localNowContext(now);
   return `You are a personal assistant. You turn a short note (typed or spoken, Indian English or Malayalam, amounts in rupees) into REMINDERS, TASKS and/or money TRANSACTIONS.
-Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.
+Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.${categoryExtra}
 
 Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "listItems":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
 
@@ -533,6 +536,7 @@ function parseReminderLocally(text: string, now: Date): ReminderInput[] {
  * whole thing stays quick even when Google is overloaded.
  */
 export async function parsePrompt(text: string): Promise<ParseResult & { engine: string; warning?: string; errors?: string[] }> {
+  categoryExtra = await import("./categories").then((m) => m.categoryHint()).catch(() => "");
   const errors: string[] = [];
   const valid = (engine: string, raw: unknown) => {
     const parsed = resultSchema.safeParse(raw);

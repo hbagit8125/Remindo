@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, registerCustomCategories, type CategoryData } from "../types";
 
 export const TZ = process.env.NEXT_PUBLIC_APP_TIMEZONE || "Asia/Kolkata";
 
@@ -187,4 +188,15 @@ export function useHidden() {
     () => hidden,
     () => hidden,
   );
+}
+
+/** Your categories (built-in minus hidden, plus your own). Also teaches categoryMeta their emojis. */
+export function useCategories() {
+  const r = useData<CategoryData>("/api/categories");
+  if (r.data) registerCustomCategories(r.data.custom);
+  return {
+    ...r,
+    expense: r.data?.expense || EXPENSE_CATEGORIES,
+    income: r.data?.income || INCOME_CATEGORIES,
+  };
 }

@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { Check, ChevronDown, Loader2, X } from "lucide-react";
-import { api, refreshAll } from "./client";
+import { api, refreshAll, useCategories } from "./client";
 import { useToast } from "./toast";
-import { categoryMeta, EXPENSE_CATEGORIES } from "../types";
+import { categoryMeta } from "../types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
 
 const PRESETS = [10000, 20000, 30000, 50000];
@@ -41,9 +41,10 @@ export function BudgetSheet({
     };
   }, [onClose]);
 
-  // Categories you've spent on come first, then the rest of the defaults.
+  const { expense: allCats } = useCategories();
+  // Categories you've spent on come first, then the rest.
   const spent = new Map(spentByCategory.map((c) => [c.category, c.amount]));
-  const list = [...new Set([...spentByCategory.map((c) => c.category), ...Object.keys(cats), ...EXPENSE_CATEGORIES])];
+  const list = [...new Set([...spentByCategory.map((c) => c.category), ...Object.keys(cats), ...allCats])];
   const catSum = Object.values(cats).reduce((s, v) => s + (Number(v) || 0), 0);
   const totalNum = Number(total) || 0;
   const hasAny = Object.keys(initial).length > 0;
