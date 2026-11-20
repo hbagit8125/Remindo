@@ -40,6 +40,17 @@ export type Command = z.infer<typeof commandSchema>;
 
 export type Answer = { text: string; lines?: string[] };
 
+/** "Snooze to tomorrow 10am" → minutes from now until then; otherwise the given minutes (default 60). */
+export function snoozeMinutes(c: { date?: string | null; time?: string | null; minutes?: number | null }, now = new Date()) {
+  if (c.date || c.time) {
+    let until = localToUtc(c.date || fmtLocal(now, "yyyy-MM-dd"), c.time || "09:00");
+    // "Snooze to 10am" said after 10am means tomorrow.
+    if (!c.date && until <= now) until = new Date(until.getTime() + 86400000);
+    return Math.max(1, Math.ceil((until.getTime() - now.getTime()) / 60000));
+  }
+  return c.minutes || 60;
+}
+
 const monthStart = (now: Date) => `${fmtLocal(now, "yyyy-MM")}-01`;
 const today = (now: Date) => fmtLocal(now, "yyyy-MM-dd");
 const pretty = (d: string) => fmtLocal(new Date(`${d}T12:00:00Z`), "d MMM yyyy");
@@ -194,14 +205,14 @@ export async function resolveCommand(c: Command, now = new Date()): Promise<Cand
     // Act on the most relevant occurrence: an overdue one in the last week, else the next one.
     const past = occurrencesBetween(r, new Date(now.getTime() - 7 * 86400000), now).at(-1);
     const next = occurrencesBetween(r, now, new Date(now.getTime() + 400 * 86400000))[0];
-    const occ = c.action === "log_payment" || c.action === "complete" ? past || next : next || past;
+    const occ = c.action === "log_payment" || c.action === "complete" || c.action === "snooze" ? past || next : next || past;
     if (!occ && c.action !== "delete") continue;
     const when = occ ? fmtLocal(occ, r.allDay ? "EEE d MMM" : "EEE d MMM, h:mm a") : "";
     const desc =
       c.action === "complete"
         ? `Mark “${r.title}” (${when}) as done`
         : c.action === "snooze"
-          ? `Snooze “${r.title}” by ${c.minutes || 60} min`
+          ? `Snooze “${r.title}” ${c.date || c.time ? `until ${fmtLocal(new Date(now.getTime() + snoozeMinutes(c, now) * 60000), "EEE d MMM, h:mm a")}` : `by ${c.minutes || 60} min`}`
           : c.action === "reschedule"
             ? `Move “${r.title}”${r.rrule ? " (whole series)" : ""} to ${c.date ? pretty(c.date) : "the same day"}${c.time ? ` ${c.time}` : ""}`
             : c.action === "delete"
@@ -253,8 +264,8 @@ export async function executeCommand(x: z.infer<typeof executeSchema>, now = new
       await completeOccurrence(r.id, occ);
       return `“${r.title}” marked done`;
     case "snooze": {
-      const until = await snoozeOccurrence(r.id, occ, x.minutes || 60);
-      return `Snoozed until ${until ? fmtLocal(until, "h:mm a") : "later"}`;
+      const until = await snoozeOccurrence(r.id, occ, snoozeMinutes(x, now));
+      return `Snoozed until ${until ? fmtLocal(until, until.getTime() - now.getTime() > 20 * 3600000 ? "EEE d MMM, h:mm a" : "h:mm a") : "later"}`;
     }
     case "log_payment": {
       const res = await logReminderPayment(r.id, occ);
