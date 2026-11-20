@@ -551,10 +551,10 @@ async function main() {
 
   // Snooze "until" a date/time, not a fixed 60 minutes.
   const A2 = await import("../src/lib/assistant");
-  const at = new Date("2026-11-20T08:15:00Z"); // 1:45pm IST
-  assert.equal(A2.snoozeMinutes({ date: "2026-11-21", time: "10:00" }, at), 20 * 60 + 15);
-  assert.equal(A2.snoozeMinutes({ time: "10:00" }, at), 20 * 60 + 15, "past time today → tomorrow");
-  assert.equal(A2.snoozeMinutes({ minutes: 15 }, at), 15);
+  const snAt = new Date("2026-11-20T08:15:00Z"); // 1:45pm IST
+  assert.equal(A2.snoozeMinutes({ date: "2026-11-21", time: "10:00" }, snAt), 20 * 60 + 15);
+  assert.equal(A2.snoozeMinutes({ time: "10:00" }, snAt), 20 * 60 + 15, "past time today → tomorrow");
+  assert.equal(A2.snoozeMinutes({ minutes: 15 }, snAt), 15);
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
