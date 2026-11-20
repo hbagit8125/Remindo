@@ -87,7 +87,7 @@ export function CustomiseHome({ layout, onClose, onSave }: { layout: Layout; onC
         <button className="rounded-xl border border-line px-3 py-2 text-sm font-medium hover:bg-raised" onClick={() => setItems(DEFAULT)}>
           Reset
         </button>
-        <button
+        <button data-submit
           className={clsx(primaryBtn, "flex-1")}
           onClick={() =>
             onSave(items)

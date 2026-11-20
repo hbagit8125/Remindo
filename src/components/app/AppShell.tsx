@@ -71,8 +71,8 @@ function Frame({ children }: { children: React.ReactNode }) {
   // Keyboard: "n" opens the add sheet, "/" opens search.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement;
-      if (el.closest("input, textarea, select, [contenteditable]")) return;
+      const el = e.target;
+      if (el instanceof Element && el.closest("input, textarea, select, [contenteditable]")) return;
       if (e.key === "n") {
         e.preventDefault();
         open({ mode: "ask" });

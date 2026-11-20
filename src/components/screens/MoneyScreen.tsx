@@ -92,7 +92,7 @@ export function MoneyScreen() {
           </div>
           <div>
             <p className="text-xs font-medium text-muted">Left</p>
-            <p className={clsx("mt-1 text-xl font-semibold tabular-nums md:text-2xl", income - spent < 0 && "text-rose-500")}>
+            <p className={clsx("mt-1 whitespace-nowrap text-lg font-semibold tabular-nums sm:text-xl md:text-2xl", income - spent < 0 && "text-rose-500")}>
               {income ? formatINR(income - spent) : "—"}
             </p>
           </div>

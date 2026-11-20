@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { db, goals } from "@/db";
+import { db, goalContributions, goals } from "@/db";
 import { addContribution, goalInputSchema } from "@/lib/moneyplus";
 import { toPaise } from "@/lib/money";
 
@@ -31,6 +31,8 @@ export async function PATCH(req: Request, { params }: Ctx) {
 
 export async function DELETE(_req: Request, { params }: Ctx) {
   const { id } = await params;
-  await db().update(goals).set({ archived: true }).where(eq(goals.id, id));
+  // Delete for good (with its contributions), so it doesn't linger in search.
+  await db().delete(goalContributions).where(eq(goalContributions.goalId, id));
+  await db().delete(goals).where(eq(goals.id, id));
   return NextResponse.json({ ok: true });
 }

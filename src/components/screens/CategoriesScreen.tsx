@@ -181,7 +181,7 @@ function CategoryForm({ initial, onClose, call }: { initial: Editing; onClose: (
               <Trash2 className="h-4 w-4" />
             </button>
           )}
-          <button className={clsx(primaryBtn, "flex-1")} disabled={busy || !v.name.trim()} onClick={save}>
+          <button data-submit className={clsx(primaryBtn, "flex-1")} disabled={busy || !v.name.trim()} onClick={save}>
             Save
           </button>
         </div>

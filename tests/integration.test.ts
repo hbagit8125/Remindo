@@ -642,6 +642,19 @@ async function main() {
   assert.equal(fmtLocal(lateR.dueAt, "yyyy-MM-dd HH:mm"), "2026-11-21 09:00");
   await L.deleteMedicine(lateMed!.id);
 
+  // ---------------------------------------------------------------- QA round 2
+  const { restoreNames } = await import("../src/lib/parse");
+  assert.equal(restoreNames({ dues: [{ person: "Riya" }] }, "TEST Riya owes me 250").dues[0].person, "TEST Riya");
+  assert.equal(restoreNames({ dues: [{ person: "Arun" }] }, "Paid 1200 for dinner, Arun owes 600").dues[0].person, "Arun");
+  // Deleting a goal removes it for good (and from search).
+  const GR = await import("../src/app/api/goals/[id]/route");
+  const { goals: goalsT } = await import("../src/db");
+  const [qaGoal] = await db().insert(goalsT).values({ name: "QA trip", targetPaise: 100000 }).returning();
+  await GR.DELETE(new Request("https://x"), { params: Promise.resolve({ id: qaGoal.id }) });
+  assert.equal((await db().select().from(goalsT).where(eq(goalsT.id, qaGoal.id))).length, 0);
+  // Bad due ids → 404, not 500.
+  assert.equal((await DR.DELETE(new Request("https://x"), { params: Promise.resolve({ id: "undefined" }) })).status, 404);
+
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
 

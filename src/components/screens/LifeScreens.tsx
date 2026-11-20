@@ -143,7 +143,7 @@ export function DocumentsScreen() {
           icon={<FileText className="h-6 w-6" />}
           title="Never miss a renewal"
           text="Add insurance, PUC, licence or passport. You'll be reminded 30 days, 7 days and 1 day before it expires."
-          action={<button className={primaryBtn} onClick={() => setEditing({ kind: "vehicle_insurance" })}>Add a document</button>}
+          action={<button data-submit className={primaryBtn} onClick={() => setEditing({ kind: "vehicle_insurance" })}>Add a document</button>}
         />
       ) : (
         <div className="card divide-y divide-line overflow-hidden rounded-3xl">
@@ -254,7 +254,7 @@ function DocForm({ initial, onClose }: { initial: Partial<Doc>; onClose: () => v
               <Trash2 className="h-4 w-4" />
             </button>
           )}
-          <button className={clsx(primaryBtn, "flex-1")} disabled={busy || !v.name || !v.expiryDate} onClick={save}>
+          <button data-submit className={clsx(primaryBtn, "flex-1")} disabled={busy || !v.name || !v.expiryDate} onClick={save}>
             Save
           </button>
         </div>
@@ -282,7 +282,7 @@ function RenewForm({ doc, onClose }: { doc: Doc; onClose: () => void }) {
           <label className={label}>What did it cost? (logged as an expense)</label>
           <input type="number" inputMode="decimal" className={field} value={cost} onChange={(e) => setCost(e.target.value)} />
         </div>
-        <button
+        <button data-submit
           className={primaryBtn}
           disabled={busy || !expiry}
           onClick={() => run(() => api(`/api/documents/${doc.id}`, { method: "POST", json: { expiryDate: expiry, cost: cost ? Number(cost) : null } }), "Renewed. Reminders moved", onClose)}
@@ -312,7 +312,7 @@ export function PeopleScreen() {
           icon={<Cake className="h-6 w-6" />}
           title="Remember every birthday"
           text="Add family and friends. You'll get a reminder a week before, the day before, and on the day, with your gift notes."
-          action={<button className={primaryBtn} onClick={() => setEditing({})}>Add someone</button>}
+          action={<button data-submit className={primaryBtn} onClick={() => setEditing({})}>Add someone</button>}
         />
       ) : (
         <div className="card divide-y divide-line overflow-hidden rounded-3xl">
@@ -445,7 +445,7 @@ function PersonForm({ initial, onClose }: { initial: Partial<Person>; onClose: (
               <Trash2 className="h-4 w-4" />
             </button>
           )}
-          <button className={clsx(primaryBtn, "flex-1")} disabled={busy || !v.name} onClick={save}>
+          <button data-submit className={clsx(primaryBtn, "flex-1")} disabled={busy || !v.name} onClick={save}>
             Save
           </button>
         </div>
@@ -472,7 +472,7 @@ export function HealthScreen() {
           icon={<Pill className="h-6 w-6" />}
           title="Dose reminders"
           text="Add a medicine with its times. Tap Done on each reminder and Remindo counts down the tablets and tells you when to refill."
-          action={<button className={primaryBtn} onClick={() => setEditing({ times: ["09:00"], perDose: 1, refillAt: 5 })}>Add medicine</button>}
+          action={<button data-submit className={primaryBtn} onClick={() => setEditing({ times: ["09:00"], perDose: 1, refillAt: 5 })}>Add medicine</button>}
         />
       ) : (
         <div className="card divide-y divide-line overflow-hidden rounded-3xl">
@@ -591,7 +591,7 @@ function MedicineForm({ initial, onClose }: { initial: Partial<Medicine>; onClos
               <Trash2 className="h-4 w-4" />
             </button>
           )}
-          <button className={clsx(primaryBtn, "flex-1")} disabled={busy || !v.name || !v.times.length} onClick={save}>
+          <button data-submit className={clsx(primaryBtn, "flex-1")} disabled={busy || !v.name || !v.times.length} onClick={save}>
             Save
           </button>
         </div>
@@ -610,7 +610,7 @@ function RefillForm({ med, onClose }: { med: Medicine; onClose: () => void }) {
           <label className={label}>How many did you buy?</label>
           <input type="number" inputMode="numeric" className={field} value={n} onChange={(e) => setN(e.target.value)} />
         </div>
-        <button className={primaryBtn} disabled={busy || !Number(n)} onClick={() => run(() => api(`/api/medicines/${med.id}`, { method: "POST", json: { added: Number(n) } }), "Stock updated", onClose)}>
+        <button data-submit className={primaryBtn} disabled={busy || !Number(n)} onClick={() => run(() => api(`/api/medicines/${med.id}`, { method: "POST", json: { added: Number(n) } }), "Stock updated", onClose)}>
           <Check className="h-4 w-4" /> Save
         </button>
       </div>
@@ -635,7 +635,7 @@ export function StudyScreen() {
           icon={<BookOpen className="h-6 w-6" />}
           title="Stay ahead of deadlines"
           text="Add exams and assignments. You'll be reminded a week before, a day before and 3 hours before."
-          action={<button className={primaryBtn} onClick={() => setOpen(true)}>Add a deadline</button>}
+          action={<button data-submit className={primaryBtn} onClick={() => setOpen(true)}>Add a deadline</button>}
         />
       ) : (
         <div className="card divide-y divide-line overflow-hidden rounded-3xl">
@@ -726,7 +726,7 @@ function StudyForm({ onClose }: { onClose: () => void }) {
           <label className={label}>Notes</label>
           <input className={field} placeholder="Syllabus, venue…" value={v.notes} onChange={(e) => setV({ ...v, notes: e.target.value })} />
         </div>
-        <button className={primaryBtn} disabled={busy || !v.subject || !v.date} onClick={save}>
+        <button data-submit className={primaryBtn} disabled={busy || !v.subject || !v.date} onClick={save}>
           Save
         </button>
       </div>
@@ -759,7 +759,7 @@ export function ListsScreen() {
           icon={<ListChecks className="h-6 w-6" />}
           title="Lists and quick notes"
           text={`Make a shopping or packing list, or just say "add eggs and bread to my shopping list".`}
-          action={<button className={primaryBtn} onClick={() => setCreating("list")}>New list</button>}
+          action={<button data-submit className={primaryBtn} onClick={() => setCreating("list")}>New list</button>}
         />
       ) : (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
@@ -802,9 +802,8 @@ function NewListForm({ kind, onClose }: { kind: "list" | "note"; onClose: () => 
           placeholder={kind === "list" ? "Shopping, Packing for Goa…" : "Title"}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && name.trim() && !busy && create()}
         />
-        <button className={primaryBtn} disabled={busy || !name.trim()} onClick={() => create()}>
+        <button data-submit className={primaryBtn} disabled={busy || !name.trim()} onClick={() => create()}>
           Create
         </button>
       </div>
@@ -914,7 +913,7 @@ export function ListDetailScreen({ id }: { id: string }) {
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && add()}
             />
-            <button className={primaryBtn} onClick={add} aria-label="Add">
+            <button data-submit className={primaryBtn} onClick={add} aria-label="Add">
               <Plus className="h-4 w-4" />
             </button>
           </div>

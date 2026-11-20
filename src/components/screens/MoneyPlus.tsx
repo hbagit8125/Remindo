@@ -20,7 +20,20 @@ export const ghostBtn = "rounded-xl border border-line px-3 py-2 text-sm font-me
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
     <div className="animate-fade fixed inset-0 z-[60] flex items-end justify-center bg-black/50 backdrop-blur-sm md:items-center md:p-6" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="animate-sheet pb-safe max-h-[92vh] w-full overflow-y-auto rounded-t-3xl border border-line bg-[var(--bg)] p-5 md:max-w-md md:rounded-3xl">
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          // Enter in a text box saves (clicks the form's main button), like a normal form.
+          const t = e.target as HTMLElement;
+          if (e.key !== "Enter" || e.nativeEvent.isComposing || t.tagName !== "INPUT") return;
+          const btn = e.currentTarget.querySelector<HTMLButtonElement>("button[data-submit]:not(:disabled)");
+          if (btn) {
+            e.preventDefault();
+            btn.click();
+          }
+        }}
+        className="animate-sheet pb-safe max-h-[92vh] w-full overflow-y-auto rounded-t-3xl border border-line bg-[var(--bg)] p-5 md:max-w-md md:rounded-3xl"
+      >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">{title}</h2>
           <button onClick={onClose} aria-label="Close" className="grid h-10 w-10 place-items-center rounded-xl text-muted hover:bg-raised">
@@ -81,7 +94,7 @@ export function AccountsScreen() {
           title="Track your balances"
           text="Add your bank accounts, cards, cash and wallets with today's balance. Tag entries with an account and balances update automatically."
           action={
-            <button className={primaryBtn} onClick={() => setEditing({ kind: "bank" })}>
+            <button data-submit className={primaryBtn} onClick={() => setEditing({ kind: "bank" })}>
               Add first account
             </button>
           }
@@ -172,7 +185,7 @@ function AccountForm({ initial, onClose }: { initial: Partial<Account>; onClose:
               Remove
             </button>
           )}
-          <button
+          <button data-submit
             className={clsx(primaryBtn, "flex-1")}
             disabled={busy || !name.trim()}
             onClick={() =>
@@ -219,7 +232,7 @@ export function GoalsScreen() {
           title="Save for something"
           text="“₹50,000 for a trip by March.” Remindo shows your progress and how much to put aside each month."
           action={
-            <button className={primaryBtn} onClick={() => setEditing({})}>
+            <button data-submit className={primaryBtn} onClick={() => setEditing({})}>
               Create a goal
             </button>
           }
@@ -309,7 +322,7 @@ function GoalForm({ initial, onClose }: { initial: Partial<Goal>; onClose: () =>
               Remove
             </button>
           )}
-          <button
+          <button data-submit
             className={clsx(primaryBtn, "flex-1")}
             disabled={busy || !name.trim() || !(Number(target) > 0)}
             onClick={() =>
@@ -346,7 +359,7 @@ function ContributionForm({ goal, onClose }: { goal: Goal; onClose: () => void }
           <span className="text-3xl font-semibold text-muted">₹</span>
           <input type="number" inputMode="decimal" autoFocus value={amount} onChange={(e) => setAmount(e.target.value)} className="w-48 bg-transparent text-center text-5xl font-semibold outline-none" />
         </div>
-        <button
+        <button data-submit
           className={primaryBtn}
           disabled={busy || !(Number(amount) > 0)}
           onClick={() =>
@@ -491,7 +504,7 @@ function DueForm({ onClose }: { onClose: () => void }) {
           <label className={label}>Remind me on (default: in 3 days)</label>
           <input className={field} type="date" value={remindOn} onChange={(e) => setRemindOn(e.target.value)} />
         </div>
-        <button
+        <button data-submit
           className={primaryBtn}
           disabled={busy || !person.trim() || !(Number(amount) > 0)}
           onClick={() =>

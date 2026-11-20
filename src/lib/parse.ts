@@ -100,7 +100,7 @@ Each task:
 }
 
 DUES = money someone owes you or you owe someone: "Arun owes me 600", "I owe Priya 200".
-Each due: {"person": name, "direction": "they_owe" | "i_owe", "amount": rupees, "note": what for or null, "remindOn": "YYYY-MM-DD" if they say when to collect/pay, else null}
+Each due: {"person": the name exactly as written, every word kept (e.g. "TEST Riya" stays "TEST Riya"), "direction": "they_owe" | "i_owe", "amount": rupees, "note": what for or null, "remindOn": "YYYY-MM-DD" if they say when to collect/pay, else null}
 "Paid 1200 for dinner, Arun owes 600" = one expense of 1200 AND one due (Arun, they_owe, 600, "dinner").
 
 LIST ITEMS = things to add to a named list (shopping, packing, ideas, movies…): "add eggs and bread to shopping list", "put sunscreen on the packing list".
@@ -541,12 +541,22 @@ function parseReminderLocally(text: string, now: Date): ReminderInput[] {
  * (if a key is set) → the offline parser. Each step has a time limit so the
  * whole thing stays quick even when Google is overloaded.
  */
+/** If the AI dropped an all-caps word right before a person's name ("TEST Riya" → "Riya"), put it back. */
+export function restoreNames<T extends { dues: { person: string }[] }>(r: T, text: string): T {
+  const esc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const d of r.dues) {
+    const m = text.match(new RegExp(`((?:\\b[A-Z][A-Z0-9]+\\s+)+)${esc(d.person)}\\b`));
+    if (m) d.person = `${m[1].trim()} ${d.person}`;
+  }
+  return r;
+}
+
 export async function parsePrompt(text: string): Promise<ParseResult & { engine: string; warning?: string; errors?: string[] }> {
   categoryExtra = await import("./categories").then((m) => m.categoryHint()).catch(() => "");
   const errors: string[] = [];
   const valid = (engine: string, raw: unknown) => {
     const parsed = resultSchema.safeParse(raw);
-    if (parsed.success && hasContent(parsed.data)) return { ...parsed.data, engine };
+    if (parsed.success && hasContent(parsed.data)) return { ...restoreNames(parsed.data, text), engine };
     throw new Error(parsed.success ? "nothing found" : parsed.error.issues[0]?.message);
   };
   const attempt = (engine: string, fn: () => Promise<unknown>) =>
