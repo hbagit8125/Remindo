@@ -386,8 +386,14 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
         <div className="mt-4 space-y-2">
           {proposals.map((p, pi) =>
             p.candidates.length ? (
-              p.candidates.map((c) => {
+              <div key={pi} className="space-y-2">
+                {p.candidates.length > 1 && !p.candidates.some((o) => doneIds.includes(`${p.command.action}:${o.id}`)) && (
+                  <p className="px-1 text-xs text-muted">Which one did you mean? Pick one.</p>
+                )}
+                {p.candidates.map((c) => {
                 const done = doneIds.includes(`${p.command.action}:${c.id}`);
+                // Several matches for one command: once you pick one, the others are skipped.
+                if (!done && p.candidates.some((o) => doneIds.includes(`${p.command.action}:${o.id}`))) return null;
                 return (
                   <div key={`${pi}-${c.id}`} className="card flex items-center gap-3 rounded-2xl p-3">
                     <span className="min-w-0 flex-1 text-sm">{c.description}</span>
@@ -403,7 +409,8 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
                     </button>
                   </div>
                 );
-              })
+              })}
+              </div>
             ) : (
               <p key={pi} className="text-sm text-muted">
                 Couldn&apos;t find anything matching “{p.command.target}”.
@@ -846,7 +853,15 @@ function ExpensePanel({ id, initial, close }: { id?: string; initial?: Transacti
   return (
     <>
       {!id && <QuickMoney onScanned={(v) => setValue({ ...blankExpense(), ...v })} />}
-      <ExpenseEditor value={value} onChange={setValue} extraCategories={extra} autoFocus={!id} />
+      <ExpenseEditor
+        value={value}
+        onChange={(v) => {
+          setValue(v);
+          setErr(""); // e.g. "Pick both accounts" goes away once you pick them
+        }}
+        extraCategories={extra}
+        autoFocus={!id}
+      />
       {!id && value.type !== "transfer" && (
         <label className="mt-4 flex items-center gap-2 text-sm text-muted">
           <input type="checkbox" checked={asFavourite} onChange={(e) => setAsFavourite(e.target.checked)} className="h-4 w-4 accent-indigo-500" />
@@ -892,7 +907,7 @@ function TaskPanel({ id, initial, close }: { id?: string; initial?: TaskInput; c
 
   return (
     <>
-      <TaskEditor value={value} onChange={setValue} autoFocus={!id} />
+      <TaskEditor value={value} onChange={setValue} autoFocus={!id} onSubmit={() => !saving && value.title.trim() && save()} />
       {err && <p className="mt-3 text-sm text-rose-500">{err}</p>}
       <PanelActions saving={saving} disabled={!value.title.trim()} onSave={save} onDelete={id ? remove : undefined} />
     </>

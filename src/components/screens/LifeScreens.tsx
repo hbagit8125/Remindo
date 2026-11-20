@@ -207,7 +207,7 @@ function DocForm({ initial, onClose }: { initial: Partial<Doc>; onClose: () => v
           <select
             className={field}
             value={v.kind}
-            onChange={(e) => setV({ ...v, kind: e.target.value, name: v.name || (DOC_LABEL[e.target.value] || "").replace(/^\S+\s/, "") })}
+            onChange={(e) => setV({ ...v, kind: e.target.value })}
           >
             {Object.entries(DOC_LABEL).map(([k, l]) => (
               <option key={k} value={k}>
@@ -218,7 +218,13 @@ function DocForm({ initial, onClose }: { initial: Partial<Doc>; onClose: () => v
         </div>
         <div>
           <label className={label}>Name</label>
-          <input className={field} placeholder="e.g. Activa insurance" value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} />
+          <input
+            className={field}
+            maxLength={80}
+            placeholder={v.kind === "other" ? "e.g. Activa insurance" : `e.g. ${(DOC_LABEL[v.kind] || "").replace(/^\S+\s/, "")}`}
+            value={v.name}
+            onChange={(e) => setV({ ...v, name: e.target.value })}
+          />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -341,12 +347,18 @@ export function PeopleScreen() {
 /** Day + month pickers → "MM-DD". */
 function MonthDay({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [m, d] = value ? value.split("-") : ["", ""];
-  const set = (mm: string, dd: string) => onChange(mm && dd ? `${mm}-${dd}` : "");
+  const maxDay = m ? [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][Number(m) - 1] : 31;
+  // Picking a shorter month pulls the day back (31 → 30 Apr, 29 Feb).
+  const set = (mm: string, dd: string) => {
+    const limit = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][Number(mm) - 1] || 31;
+    const day = dd && Number(dd) > limit ? String(limit) : dd;
+    onChange(mm && day ? `${mm}-${day}` : "");
+  };
   return (
     <div className="grid grid-cols-2 gap-2">
       <select className={field} value={d} onChange={(e) => set(m || "01", e.target.value)} aria-label="Day">
         <option value="">Day</option>
-        {Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, "0")).map((x) => (
+        {Array.from({ length: maxDay }, (_, i) => String(i + 1).padStart(2, "0")).map((x) => (
           <option key={x} value={x}>
             {Number(x)}
           </option>
@@ -783,25 +795,30 @@ function NewListForm({ kind, onClose }: { kind: "list" | "note"; onClose: () => 
             </button>
           ))}
         </div>
-        <input className={field} autoFocus placeholder={kind === "list" ? "Shopping, Packing for Goa…" : "Title"} value={name} onChange={(e) => setName(e.target.value)} />
-        <button
-          className={primaryBtn}
-          disabled={busy || !name.trim()}
-          onClick={() =>
-            run(
-              async () => {
-                const r = await api<{ list: { id: string } }>("/api/lists", { method: "POST", json: { name, emoji, kind } });
-                window.location.href = `/lists?id=${r.list.id}`;
-              },
-              "Created",
-            )
-          }
-        >
+        <input
+          className={field}
+          autoFocus
+          maxLength={60}
+          placeholder={kind === "list" ? "Shopping, Packing for Goa…" : "Title"}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && name.trim() && !busy && create()}
+        />
+        <button className={primaryBtn} disabled={busy || !name.trim()} onClick={() => create()}>
           Create
         </button>
       </div>
     </Modal>
   );
+  function create() {
+    return run(
+      async () => {
+        const r = await api<{ list: { id: string } }>("/api/lists", { method: "POST", json: { name, emoji, kind } });
+        window.location.href = `/lists?id=${r.list.id}`;
+      },
+      "Created",
+    );
+  }
 }
 
 /** /lists shows all lists; /lists?id=… opens one. */

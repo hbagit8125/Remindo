@@ -46,6 +46,7 @@ function systemPrompt(now = new Date()) {
 Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.${categoryExtra}
 
 Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "listItems":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
+KEEP THE USER'S WORDS: titles, notes, names and list items must keep every meaningful word the user wrote, including names, codes and tags in capitals (e.g. "TEST", "KSEB", "Arun"). Only drop filler like "remind me to", "please", "I need to".
 
 QUESTIONS: if they are ASKING about their own data, return only "question" (everything else empty):
 {"kind": "spend" | "income" | "agenda" | "find" | "tasks" | "balance" | "goals" | "dues" | "budget",
@@ -55,8 +56,9 @@ QUESTIONS: if they are ASKING about their own data, return only "question" (ever
 Examples: "How much did I spend on food in October?" → spend, category Food, from/to = 1st–last of the most recent past October. "Spent on Swiggy last month?" → spend, keyword "Swiggy". "What's due this week?" → agenda (Mon–Sun of this week). "When is Ammu's birthday?" → find, keyword "Ammu birthday". "How much budget is left?" → budget. "Who owes me money?" → dues. "My balance?" → balance.
 
 COMMANDS: if they want to CHANGE something that already exists, return "commands":
-{"action": "complete" | "snooze" | "reschedule" | "delete" | "log_payment", "target": words naming the reminder/task, "date": "YYYY-MM-DD" or null, "time": "HH:mm" or null, "minutes": snooze minutes or null}
+{"action": "complete" | "snooze" | "reschedule" | "delete" | "log_payment" | "settle_due", "target": words naming the reminder/task (for settle_due: the person's name), "date": "YYYY-MM-DD" or null, "time": "HH:mm" or null, "minutes": snooze minutes or null}
 Examples: "Move the dentist to Friday 5pm" → reschedule, target "dentist", date=Friday, time 17:00. "Mark rent as paid" → two commands: log_payment "rent" and complete "rent". "Snooze gym by 30 minutes" → snooze, 30. "Cancel the plumber reminder" → delete "plumber". "Mark buy milk done" → complete "buy milk".
+"Riya paid me back" / "Arun returned the 300" / "I paid Sam back" → settle_due, target = the person's name. These close an existing due; do NOT also add a transaction.
 
 TRANSACTIONS = money that already moved: "spent", "paid", "bought", "got", "received", "credited", or a plain "<thing> <amount>" like "petrol 1200".
 Each transaction:
@@ -368,6 +370,10 @@ export function parseAssistantLocally(text: string, now = new Date()): { questio
   if (/\b(my goals|savings goals?|goal progress)\b/.test(lower)) return { question: { kind: "goals" } };
   if (/^(what are )?my (tasks|to-?dos?)\b|^(open|pending) tasks/.test(lower)) return { question: { kind: "tasks" } };
 
+  const back = t.match(/^(?:i\s+)?(?:paid|returned|gave)\s+(?:back\s+)?(.+?)(?:\s+back)?(?:\s+(?:the\s+)?(?:rs\.?|₹)?\s*\d[\d,]*)?$/i);
+  const backTheirs = t.match(/^(.+?)\s+(?:paid|returned|gave)(?:\s+me)?\s+back\b/i) || t.match(/^(.+?)\s+(?:paid|returned|gave)\s+(?:me\s+)?(?:the\s+)?(?:rs\.?|₹)?\s*\d[\d,]*\s+back\b/i);
+  if (backTheirs) return { commands: [{ action: "settle_due", target: backTheirs[1].replace(/^(so|and)\s+/i, "") }] };
+  if (back && /\bback\b/i.test(t)) return { commands: [{ action: "settle_due", target: back[1] }] };
   const paid = t.match(/^mark\s+(?:the\s+)?(.+?)\s+as\s+paid$/i);
   if (paid) return { commands: [{ action: "log_payment", target: paid[1] }, { action: "complete", target: paid[1] }] };
   const done = t.match(/^(?:mark|tick(?: off)?|complete|finish(?:ed)?)\s+(?:the\s+)?(.+?)(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$/i);
@@ -552,15 +558,15 @@ export async function parsePrompt(text: string): Promise<ParseResult & { engine:
       });
 
   // Gemini, with a "hedge": if the main model hasn't answered in 2.5s, the
-  // backup model starts too and whichever answers first wins. Worst case ≈ 6s.
+  // backup model starts too and whichever answers first wins. Worst case ≈ 9.5s.
   if (process.env.GEMINI_API_KEY) {
-    const primary = attempt("gemini", () => withGemini(text, GEMINI_PRIMARY(), 6000));
+    const primary = attempt("gemini", () => withGemini(text, GEMINI_PRIMARY(), 8000));
     const backup = new Promise<Awaited<typeof primary>>((resolve, reject) => {
       let started = false;
       const start = () => {
         if (started) return;
         started = true;
-        attempt("gemini-backup", () => withGemini(text, GEMINI_BACKUP(), 5000)).then(resolve, reject);
+        attempt("gemini-backup", () => withGemini(text, GEMINI_BACKUP(), 7000)).then(resolve, reject);
       };
       const timer = setTimeout(start, 2500);
       primary.then(

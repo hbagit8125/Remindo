@@ -82,7 +82,12 @@ export function HomeScreen() {
             <Wallet className="h-4 w-4 text-emerald-500" /> Spent today
           </div>
           <p className="mt-2 text-3xl font-semibold tabular-nums">{loading ? "–" : formatINR(spentToday)}</p>
-          <p className="text-xs text-muted">{tx.filter((t) => t.date === todayKey).length} entries</p>
+          <p className="text-xs text-muted">
+              {(() => {
+                const n = tx.filter((t) => t.date === todayKey && t.type === "expense").length;
+                return `${n} ${n === 1 ? "expense" : "expenses"}`;
+              })()}
+            </p>
         </Link>
         <Link href={limit ? "/insights" : "/insights?budget=1"} className="card col-span-2 rounded-3xl p-4 transition hover:bg-raised md:col-span-1">
           <div className="flex items-center justify-between text-xs font-medium text-muted">

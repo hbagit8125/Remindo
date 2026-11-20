@@ -138,7 +138,8 @@ async function onMessage(m: TgMessage) {
       ["<b>Confirm:</b>", ...rows.map((r, i) => `${i + 1}. ${h(r.cand.description)}`)].join("\n"),
       [
         rows.map((_, i) => ({ text: rows.length === 1 ? "✅ Do it" : `✅ ${i + 1}`, callback_data: `x:${d.id}:${i}` })),
-        ...(rows.length > 1 ? [[{ text: "✅ All", callback_data: `x:${d.id}:all` }]] : []),
+        // "All" only when each line is a different command (never two matches for one).
+        ...(rows.length > 1 && new Set(rows.map((r) => r.c)).size === rows.length ? [[{ text: "✅ All", callback_data: `x:${d.id}:all` }]] : []),
         [{ text: "✖ Cancel", callback_data: `c:${d.id}` }],
       ],
     );

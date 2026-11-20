@@ -15,7 +15,9 @@ export async function createReminders(items: ReminderInput[]) {
 /** Save expenses/income and check budgets. */
 export async function createTransactions(items: TransactionInput[]) {
   if (!items.length) return [];
-  const created = await db().insert(transactions).values(items.map(inputToTxRow)).returning();
+  const { normalizeCategory } = await import("./categories");
+  const fixed = await Promise.all(items.map(async (t) => ({ ...t, category: await normalizeCategory(t.category, t.type) })));
+  const created = await db().insert(transactions).values(fixed.map(inputToTxRow)).returning();
   await checkBudgetAlerts(created.filter((t) => t.type === "expense").map((t) => monthOf(t.date))).catch(() => null);
   return created;
 }

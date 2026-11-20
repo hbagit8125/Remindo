@@ -1,17 +1,18 @@
-import { and, eq, gte, ilike, lte, ne, or } from "drizzle-orm";
+import { isoDay } from "./day";
+import { and, eq, gte, ilike, isNull, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
-import { db, reminders, tasks, transactions } from "@/db";
+import { db, dues, reminders, tasks, transactions } from "@/db";
 import { agenda, completeOccurrence, snoozeOccurrence, cancelQueued, planAndQueue } from "./scheduler";
 import { occurrencesBetween } from "./recurrence";
 import { focusFrom, listTasks, updateTask } from "./tasks";
-import { listAccounts, listDues, listGoals } from "./moneyplus";
+import { listAccounts, listDues, listGoals, settleDue } from "./moneyplus";
 import { getBudgets, logReminderPayment, summarize } from "./finance";
 import { formatINR, TOTAL_BUDGET } from "./money";
 import { fmtLocal, localDayBounds, localToUtc } from "./time";
 import { inputToRow, type ReminderInput } from "./reminder-input";
 import { sql } from "drizzle-orm";
 
-const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const day = isoDay();
 
 /** A question about your own data. The AI fills this in; the numbers come from the database. */
 export const questionSchema = z.object({
@@ -26,8 +27,8 @@ export type Question = z.infer<typeof questionSchema>;
 
 /** A change to something that already exists. Always confirmed by you before it runs. */
 export const commandSchema = z.object({
-  action: z.enum(["complete", "snooze", "reschedule", "delete", "log_payment"]),
-  /** Words identifying the reminder or task, e.g. "dentist", "rent". */
+  action: z.enum(["complete", "snooze", "reschedule", "delete", "log_payment", "settle_due"]),
+  /** Words identifying the reminder or task, e.g. "dentist", "rent"; for settle_due, the person. */
   target: z.string().min(1).max(80),
   date: day.nullish(),
   time: z
@@ -91,7 +92,9 @@ export async function answerQuestion(q: Question, now = new Date()): Promise<Ans
       };
     }
     case "agenda": {
-      const from = q.from || today(now);
+      // "What's due this week?" means from today on, unless the whole range is in the past.
+      const to0 = q.to || null;
+      const from = !q.from || (q.from < today(now) && (!to0 || to0 >= today(now))) ? today(now) : q.from;
       const to = q.to || fmtLocal(new Date(now.getTime() + 6 * 86400000), "yyyy-MM-dd");
       const items = (await agenda(localToUtc(from, "00:00"), new Date(localToUtc(to, "00:00").getTime() + 86400000 - 1))).filter((i) => !i.done);
       const due = (await db().select().from(tasks).where(and(eq(tasks.done, false), gte(tasks.dueDate, from), lte(tasks.dueDate, to)))).filter(Boolean);
@@ -177,7 +180,7 @@ export async function answerQuestion(q: Question, now = new Date()): Promise<Ans
 // ------------------------------------------------------------- commands
 
 export type Candidate = {
-  kind: "reminder" | "task";
+  kind: "reminder" | "task" | "due";
   id: string;
   title: string;
   /** For reminders: the occurrence the action applies to. */
@@ -193,6 +196,19 @@ export async function resolveCommand(c: Command, now = new Date()): Promise<Cand
     .map((w) => w.replace(/'s$/i, "").replace(/[^\p{L}\p{N}]/gu, ""))
     .filter((w) => w.length > 2 && !/^(the|and|for|my|reminder|task|appointment)$/i.test(w));
   if (!words.length) return [];
+  if (c.action === "settle_due") {
+    const open = await db().select().from(dues).where(and(isNull(dues.settledAt), or(...words.map((w) => ilike(dues.person, `%${w}%`)))!));
+    return open.map((d) => ({
+      kind: "due" as const,
+      id: d.id,
+      title: d.person,
+      amountPaise: d.amountPaise,
+      description:
+        d.direction === "they_owe"
+          ? `${d.person} paid back ${formatINR(d.amountPaise)}${d.note ? ` (${d.note})` : ""}: close it and log it as Refund`
+          : `You paid ${d.person} back ${formatINR(d.amountPaise)}${d.note ? ` (${d.note})` : ""}: close it and log the expense`,
+    }));
+  }
   const rRows = await db()
     .select()
     .from(reminders)
@@ -232,12 +248,18 @@ export async function resolveCommand(c: Command, now = new Date()): Promise<Cand
           : `Delete task “${t.title}”`;
     out.push({ kind: "task", id: t.id, title: t.title, description: desc });
   }
-  return out.sort((a, b) => score(b.title) - score(a.title)).slice(0, 3).filter((x) => !(c.action === "log_payment" && !x.amountPaise));
+  // Only offer the best matches, so a weaker match isn't one tap away.
+  const usable = out.filter((x) => !(c.action === "log_payment" && !x.amountPaise));
+  const best = Math.max(0, ...usable.map((x) => score(x.title)));
+  return usable
+    .filter((x) => score(x.title) === best)
+    .sort((a, b) => a.title.length - b.title.length)
+    .slice(0, 3);
 }
 
 export const executeSchema = z.object({
   action: commandSchema.shape.action,
-  kind: z.enum(["reminder", "task"]),
+  kind: z.enum(["reminder", "task", "due"]),
   id: z.string().uuid(),
   occurrenceAt: z.string().datetime().nullish(),
   date: day.nullish(),
@@ -247,6 +269,10 @@ export const executeSchema = z.object({
 
 /** Run a confirmed command. */
 export async function executeCommand(x: z.infer<typeof executeSchema>, now = new Date()): Promise<string> {
+  if (x.kind === "due") {
+    const d = await settleDue(x.id, { log: true }, now);
+    return d ? `Closed: ${d.person} ${d.direction === "they_owe" ? "paid you back" : "paid back"} ${formatINR(d.amountPaise)}` : "Already settled";
+  }
   if (x.kind === "task") {
     if (x.action === "complete") return (await updateTask(x.id, { done: true }, now)) ? "Task done ✓" : "Task not found";
     if (x.action === "reschedule") return (await updateTask(x.id, { dueDate: x.date || null }, now)) ? "Task updated" : "Task not found";
@@ -297,5 +323,7 @@ export async function executeCommand(x: z.infer<typeof executeSchema>, now = new
       await planAndQueue({ reminderIds: [r.id] });
       return `Moved to ${fmtLocal(localToUtc(next.date, next.time || "09:00"), next.time ? "EEE d MMM, h:mm a" : "EEE d MMM")}`;
     }
+    default:
+      return "Done"; // settle_due on a reminder can't happen
   }
 }

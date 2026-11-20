@@ -192,7 +192,7 @@ function RemindersView() {
             className={clsx("rounded-full border px-3 py-1.5 text-xs font-medium", sub === id ? "border-fg bg-fg text-[var(--bg)]" : "border-line text-muted")}
           >
             {l}
-            {id === "important" && a.important.length ? ` · ${a.important.length}` : ""}
+            {id === "important" && a.important.length ? ` · ${new Set(a.important.map((i) => i.reminderId)).size}` : ""}
           </button>
         ))}
       </div>

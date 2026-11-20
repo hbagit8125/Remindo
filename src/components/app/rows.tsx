@@ -430,6 +430,7 @@ export function QuickTask({ focus = true, placeholder = "Add a task for today…
         onChange={(e) => setTitle(e.target.value)}
         placeholder={placeholder}
         disabled={busy}
+        maxLength={200}
         className="min-w-0 flex-1 bg-transparent py-1.5 text-[15px] outline-none placeholder:text-subtle"
       />
       {title && (

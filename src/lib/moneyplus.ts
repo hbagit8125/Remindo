@@ -1,3 +1,4 @@
+import { isoDay } from "./day";
 import { and, asc, desc, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, accounts, favourites, dues, goals, goalContributions, transactions, type Transaction } from "@/db";
@@ -6,7 +7,7 @@ import { createTransactions, createReminders } from "./create";
 import { fmtLocal } from "./time";
 import { summarize, listTransactions, shiftMonth } from "./finance";
 
-const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const day = isoDay();
 
 // ------------------------------------------------------------- accounts
 
@@ -102,7 +103,8 @@ export type DueInput = z.infer<typeof dueInputSchema>;
 export async function createDues(items: DueInput[], now = new Date()) {
   const out = [];
   for (const d of items) {
-    const remindOn = d.remindOn === null ? null : d.remindOn || fmtLocal(new Date(now.getTime() + 3 * 86400000), "yyyy-MM-dd");
+    // No date given (AI sends null, the form leaves it empty) → follow up in 3 days.
+    const remindOn = d.remindOn || fmtLocal(new Date(now.getTime() + 3 * 86400000), "yyyy-MM-dd");
     let reminderId: string | null = null;
     if (remindOn) {
       const [r] = await createReminders([
@@ -150,11 +152,13 @@ export async function settleDue(id: string, opts: { log: boolean; accountId?: st
     if (r && r.status === "active") await completeOccurrence(r.id, r.dueAt);
   }
   if (opts.log) {
-    await createTransactions([
+    const [tx] = await createTransactions([
       d.direction === "they_owe"
         ? { type: "income", amount: d.amountPaise / 100, category: "Refund", note: `${d.person} paid back${d.note ? ` · ${d.note}` : ""}`, date: fmtLocal(now, "yyyy-MM-dd"), accountId: opts.accountId || null }
         : { type: "expense", amount: d.amountPaise / 100, category: "Other", note: `Paid back ${d.person}${d.note ? ` · ${d.note}` : ""}`, date: fmtLocal(now, "yyyy-MM-dd"), accountId: opts.accountId || null },
     ]);
+    // Link the refund to the due so it can be traced (and undone).
+    if (tx) await db().update(dues).set({ transactionId: tx.id }).where(eq(dues.id, d.id));
   }
   return d;
 }
@@ -184,17 +188,20 @@ export async function listGoals(now = new Date()) {
   return rows.map((g) => {
     const saved = sums.find((s) => s.goalId === g.id)?.saved || 0;
     const left = Math.max(0, g.targetPaise - saved);
+    const savedThisMonth = monthSums.find((s) => s.goalId === g.id)?.saved || 0;
     let monthsLeft: number | null = null;
     if (g.deadline) {
       const [y, m] = g.deadline.split("-").map(Number);
       const [cy, cm] = thisMonth.split("-").map(Number);
-      monthsLeft = Math.max(1, (y - cy) * 12 + (m - cm) + 1);
+      // Count this month only if you haven't put anything aside yet this month.
+      monthsLeft = Math.max(1, (y - cy) * 12 + (m - cm) + (savedThisMonth > 0 ? 0 : 1));
     }
     return {
       ...g,
       savedPaise: saved,
-      savedThisMonthPaise: monthSums.find((s) => s.goalId === g.id)?.saved || 0,
-      perMonthPaise: monthsLeft ? Math.ceil(left / monthsLeft) : null,
+      savedThisMonthPaise: savedThisMonth,
+      // Whole rupees, rounded up.
+      perMonthPaise: monthsLeft ? Math.ceil(left / monthsLeft / 100) * 100 : null,
       monthsLeft,
     };
   });

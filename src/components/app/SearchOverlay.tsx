@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Bell, CheckSquare, Loader2, Search, X } from "lucide-react";
 import { api, fmt, relativeDay } from "./client";
 import { useSheet } from "./AddSheet";
@@ -8,10 +9,12 @@ import { useReminderActions } from "./rows";
 import { categoryMeta, type ReminderRow, type Task, type Transaction } from "../types";
 import { formatINR } from "@/lib/money";
 
-type Results = { reminders: ReminderRow[]; tasks: Task[]; transactions: Transaction[] };
+type Other = { id: string; emoji: string; title: string; sub: string; href: string };
+type Results = { reminders: ReminderRow[]; tasks: Task[]; transactions: Transaction[]; other?: Other[] };
 
 /** Search everything: reminders, tasks and money entries. */
 export function SearchOverlay({ onClose }: { onClose: () => void }) {
+  const router = useRouter();
   const [q, setQ] = useState("");
   const [res, setRes] = useState<Results | null>(null);
   const [loading, setLoading] = useState(false);
@@ -45,7 +48,7 @@ export function SearchOverlay({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(t);
   }, [q]);
 
-  const total = res ? res.reminders.length + res.tasks.length + res.transactions.length : 0;
+  const total = res ? res.reminders.length + res.tasks.length + res.transactions.length + (res.other?.length || 0) : 0;
   const row = "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-raised";
 
   return (
@@ -60,7 +63,7 @@ export function SearchOverlay({ onClose }: { onClose: () => void }) {
             autoFocus
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search reminders, tasks, expenses…"
+            placeholder="Search everything…"
             className="min-w-0 flex-1 bg-transparent py-2 text-[16px] outline-none placeholder:text-subtle"
           />
           {loading && <Loader2 className="h-4 w-4 animate-spin text-subtle" />}
@@ -155,6 +158,24 @@ export function SearchOverlay({ onClose }: { onClose: () => void }) {
                   </button>
                 );
               })}
+
+              {(res.other || []).length > 0 && <Heading>Lists, people & more</Heading>}
+              {(res.other || []).map((o) => (
+                <button
+                  key={o.id}
+                  className={row}
+                  onClick={() => {
+                    onClose();
+                    router.push(o.href);
+                  }}
+                >
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-raised text-base">{o.emoji}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{o.title}</span>
+                    <span className="block truncate text-xs text-muted">{o.sub}</span>
+                  </span>
+                </button>
+              ))}
             </>
           )}
         </div>

@@ -582,6 +582,66 @@ async function main() {
   assert.equal((await db().select().from(transactions).where(eq(transactions.note, "Dog food")))[0].category, "Other");
   assert.equal((await db().select().from(bT).where(eq(bT.category, "Pets"))).length, 0);
 
+  // ---------------------------------------------------------------- QA round 1 fixes
+  // Notes stay notes when their text is saved.
+  const LR = await import("../src/app/api/lists/[id]/route");
+  const { lists: listsT } = await import("../src/db");
+  const [note] = await db().insert(listsT).values({ name: "QA note", kind: "note" }).returning();
+  await LR.PATCH(new Request("https://x", { method: "PATCH", body: JSON.stringify({ body: "hello" }) }), { params: Promise.resolve({ id: note.id }) });
+  const [note2] = await db().select().from(listsT).where(eq(listsT.id, note.id));
+  assert.equal(note2.kind, "note");
+  assert.equal(note2.body, "hello");
+
+  // Categories are cleaned up on save.
+  await CAT.addCategory({ name: "Football", emoji: "⚽", type: "expense" });
+  assert.equal(await CAT.normalizeCategory("expenses: Football", "expense"), "Football");
+  assert.equal(await CAT.normalizeCategory("fuel", "expense"), "Fuel");
+  assert.equal(await CAT.normalizeCategory("Made up", "expense"), "Other");
+  const [qaTx] = await ct2([{ type: "expense", amount: 10, category: "expenses: Fuel", note: "QA petrol", date: local(0).date }]);
+  assert.equal(qaTx.category, "Fuel");
+  assert.match(await CAT.categoryHint(), /"Football"/);
+
+  // A due from Ask (remindOn null) still gets its follow-up reminder; deleting the due removes it.
+  const MP2 = await import("../src/lib/moneyplus");
+  const [qaDue] = await MP2.createDues([{ person: "QA Riya", direction: "they_owe", amount: 250, note: "movie", remindOn: null }]);
+  assert.ok(qaDue.reminderId, "reminder created for Ask dues");
+  // "Riya paid me back" → settle_due → closes the due and logs a linked Refund.
+  const back = parseLocally("QA Riya paid me back the 250");
+  assert.equal(back.commands?.[0]?.action, "settle_due");
+  const dueCands = await A2.resolveCommand({ action: "settle_due", target: "QA Riya" });
+  assert.equal(dueCands.length, 1);
+  assert.equal(dueCands[0].kind, "due");
+  assert.match(await A2.executeCommand({ action: "settle_due", kind: "due", id: dueCands[0].id }), /paid you back/);
+  const { dues: duesT } = await import("../src/db");
+  const [settled] = await db().select().from(duesT).where(eq(duesT.id, qaDue.id));
+  assert.ok(settled.settledAt && settled.transactionId, "settled and linked to its refund");
+  const [qaDue2] = await MP2.createDues([{ person: "QA Sam", direction: "they_owe", amount: 100 }]);
+  const DR = await import("../src/app/api/dues/[id]/route");
+  await DR.DELETE(new Request("https://x"), { params: Promise.resolve({ id: qaDue2.id }) });
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, qaDue2.reminderId!))).length, 0, "due's reminder removed");
+
+  // Commands only offer the best match.
+  await createReminders([
+    { title: "QA call plumber", date: local(60 * 24 * 3).date, time: "18:00", recurrence: "none", interval: 1, priority: "normal", category: "home" },
+    { title: "QA pay electricity bill", date: local(60 * 24 * 4).date, time: "09:00", recurrence: "monthly", interval: 1, priority: "normal", category: "bills" },
+  ]);
+  const mv = await A2.resolveCommand({ action: "reschedule", target: "QA call plumber", date: local(60 * 24 * 5).date, time: "19:00" });
+  assert.deepEqual(mv.map((c) => c.title), ["QA call plumber"]);
+
+  // Real dates only.
+  const { isoDay } = await import("../src/lib/day");
+  assert.equal(isoDay().safeParse("2026-02-30").success, false);
+  assert.equal(isoDay().safeParse("2028-02-29").success, true);
+  assert.equal(L.personInputSchema.safeParse({ name: "QA X", birthday: "02-31" }).success, false);
+  assert.equal(L.personInputSchema.safeParse({ name: "QA X", birthday: "02-29" }).success, true);
+
+  // Medicine added after its dose time starts tomorrow.
+  const { fmtLocal } = await import("../src/lib/time");
+  const lateMed = await L.saveMedicine({ name: "QA late", times: ["09:00"], perDose: 1, refillAt: 0 }, undefined, new Date("2026-11-20T14:00:00Z")); // 7:30pm IST
+  const [lateR] = await db().select().from(reminders).where(eq(reminders.id, lateMed!.reminderIds[0]));
+  assert.equal(fmtLocal(lateR.dueAt, "yyyy-MM-dd HH:mm"), "2026-11-21 09:00");
+  await L.deleteMedicine(lateMed!.id);
+
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
 

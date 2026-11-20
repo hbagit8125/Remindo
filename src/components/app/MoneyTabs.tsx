@@ -16,14 +16,15 @@ const TABS = [
 export function MoneyTabs() {
   const path = usePathname();
   return (
-    <div className="no-scrollbar -mx-4 mb-5 flex gap-1.5 overflow-x-auto px-4 md:mx-0 md:px-0">
+    // All five fit on a phone (no hidden "Dues" off to the side).
+    <div className="mb-5 grid grid-cols-5 gap-1 rounded-2xl bg-raised p-1 md:flex md:w-fit md:gap-1.5">
       {TABS.map((t) => (
         <Link
           key={t.href}
           href={t.href}
           className={clsx(
-            "shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition",
-            path.startsWith(t.href) ? "border-fg bg-fg text-[var(--bg)]" : "border-line text-muted hover:text-fg",
+            "rounded-xl px-1 py-2 text-center text-[13px] font-medium transition md:px-4 md:text-sm",
+            path.startsWith(t.href) ? "bg-surface text-fg shadow-sm ring-1 ring-line" : "text-muted hover:text-fg",
           )}
         >
           {t.label}

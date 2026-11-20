@@ -15,6 +15,13 @@ export async function POST(req: Request, { params }: Ctx) {
 
 export async function DELETE(_req: Request, { params }: Ctx) {
   const { id } = await params;
-  await db().delete(dues).where(eq(dues.id, id));
+  const [d] = await db().delete(dues).where(eq(dues.id, id)).returning();
+  // Remove its "Collect ₹… from …" reminder too.
+  if (d?.reminderId) {
+    const { cancelQueued } = await import("@/lib/scheduler");
+    const { reminders } = await import("@/db");
+    await cancelQueued(d.reminderId);
+    await db().delete(reminders).where(eq(reminders.id, d.reminderId));
+  }
   return NextResponse.json({ ok: true });
 }

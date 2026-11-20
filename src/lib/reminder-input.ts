@@ -1,3 +1,4 @@
+import { isoDay } from "./day";
 import { z } from "zod";
 import { config, DEFAULT_LEAD_TIMES } from "./config";
 import { localToUtc } from "./time";
@@ -11,7 +12,7 @@ export const WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] as const;
 export const reminderInputSchema = z.object({
   title: z.string().trim().min(1).max(200),
   notes: z.string().trim().max(2000).nullish(),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+  date: isoDay(),
   time: z
     .string()
     .regex(/^\d{2}:\d{2}$/, "time must be HH:mm")
@@ -19,9 +20,7 @@ export const reminderInputSchema = z.object({
   recurrence: z.enum(["none", "daily", "weekly", "monthly", "yearly"]).default("none"),
   interval: z.coerce.number().int().min(1).max(365).default(1),
   weekdays: z.array(z.enum(WEEKDAYS)).nullish(),
-  until: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
+  until: isoDay()
     .nullish(),
   priority: z.enum(["low", "normal", "high"]).default("normal"),
   category: z.string().trim().max(50).nullish(),
