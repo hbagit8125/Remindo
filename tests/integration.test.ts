@@ -655,6 +655,21 @@ async function main() {
   // Bad due ids → 404, not 500.
   assert.equal((await DR.DELETE(new Request("https://x"), { params: Promise.resolve({ id: "undefined" }) })).status, 404);
 
+  // Evening review: a reminder for tomorrow ticked off today is listed under "Done today", not under Tomorrow.
+  const DG = await import("../src/lib/digest");
+  const [early] = await createReminders([
+    { title: "QA collect from Devi", date: local(60 * 24).date, time: "19:00", recurrence: "none", interval: 1, priority: "normal", category: "money" },
+  ]);
+  const [earlyR] = await db().select().from(reminders).where(eq(reminders.id, early.id));
+  await S.completeOccurrence(early.id, earlyR.dueAt);
+  await DG.sendEveningReview();
+  const evMail = sent.at(-1)!;
+  const tomorrowPart = evMail.html.split("Tomorrow ·")[1] || "";
+  const donePart = evMail.html.split("Done today ·")[1]?.split("Tomorrow ·")[0] || "";
+  assert.ok(donePart.includes("QA collect from Devi"), "listed as done today");
+  assert.ok(!tomorrowPart.split("Money today")[0].includes("QA collect from Devi"), "not listed for tomorrow");
+  assert.ok(!/Done today · [1-9][\s\S]*Nothing ticked off today/.test(evMail.html), "count and list agree");
+
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
 

@@ -92,15 +92,22 @@ export async function sendEveningReview(now = new Date()) {
   const items = await agenda(new Date(today.start.getTime() - 7 * 86400000), tomorrow.end);
   const inToday = (i: AgendaItem) => new Date(i.occurrenceAt) >= today.start && new Date(i.occurrenceAt) < today.end;
 
-  const done = items.filter((i) => inToday(i) && i.done);
   const carried = items.filter((i) => !i.done && new Date(i.occurrenceAt) < today.end);
-  const next = items.filter((i) => new Date(i.occurrenceAt) >= tomorrow.start && new Date(i.occurrenceAt) < tomorrow.end);
+  // Tomorrow's list leaves out anything already ticked off early (e.g. a due you've been paid back).
+  const next = items.filter((i) => !i.done && new Date(i.occurrenceAt) >= tomorrow.start && new Date(i.occurrenceAt) < tomorrow.end);
 
-  // Also count things finished today that were due on other days.
-  const doneOther = await db()
-    .select({ id: completions.id })
+  // Everything you ticked off today, whatever day it was due (so the list matches the count).
+  const doneRows = await db()
+    .select({ title: reminders.title, priority: reminders.priority, occurrenceAt: completions.occurrenceAt, allDay: reminders.allDay })
     .from(completions)
-    .where(gte(completions.completedAt, today.start));
+    .innerJoin(reminders, eq(reminders.id, completions.reminderId))
+    .where(gte(completions.completedAt, today.start))
+    .orderBy(completions.completedAt);
+  const done = doneRows.map((r) => ({
+    title: r.title,
+    priority: r.priority,
+    when: inToday({ occurrenceAt: r.occurrenceAt.toISOString() } as AgendaItem) ? "✓" : `✓ (due ${fmtLocal(r.occurrenceAt, "d MMM")})`,
+  }));
 
   const dayStr = fmtLocal(now, "yyyy-MM-dd");
   const tx = (await listTransactions(fmtLocal(now, "yyyy-MM"))).filter((t) => t.date === dayStr);
@@ -117,7 +124,7 @@ export async function sendEveningReview(now = new Date()) {
 
   const tasksToday = await taskDaySummary(now);
   const body =
-    digestSection(`Done today · ${Math.max(done.length, doneOther.length)}`, done.map(toItem(false)), "Nothing ticked off today.") +
+    digestSection(`Done today · ${done.length}`, done, "Nothing ticked off today.") +
     digestSection(
       `Tasks finished · ${tasksToday.doneToday.length}`,
       tasksToday.doneToday.map((t) => ({ title: t.title, when: "✓", priority: t.priority })),
@@ -131,7 +138,7 @@ export async function sendEveningReview(now = new Date()) {
     spendHtml +
     `<p style="font-size:13px;color:#6b7280;margin-top:20px">Forgot to log something? <a href="${config.appUrl}" style="color:#6366f1">Add it now</a>.</p>`;
 
-  const doneCount = Math.max(done.length, doneOther.length);
+  const doneCount = done.length;
   await sendEmail(
     `🌙 Today: ${doneCount} done${carried.length ? ` · ${carried.length} pending` : ""} · ${formatINR(spent)} spent`,
     layout("Your day in review", body),
