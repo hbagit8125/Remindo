@@ -119,7 +119,7 @@ export async function sendEveningReview(now = new Date()) {
     ${tx
       .filter((t) => t.type === "expense")
       .slice(0, 8)
-      .map((t) => `<div style="font-size:13px;color:#6b7280;margin-top:4px">${t.note || t.category} · ${formatINR(t.amountPaise)}</div>`)
+      .map((t) => `<div style="font-size:13px;color:#6b7280;margin-top:4px">${esc(t.note || t.category)} · ${formatINR(t.amountPaise)}</div>`)
       .join("")}`;
 
   const tasksToday = await taskDaySummary(now);

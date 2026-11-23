@@ -29,6 +29,8 @@ export async function GET() {
       connected: Boolean(tg.chatId),
       chatName: tg.chatName || null,
     },
+    // Short passcodes are easy to guess; More shows a warning (the value itself never leaves the server).
+    security: { weakPasscode: (process.env.APP_PASSCODE || "").length < 10 },
   });
 }
 

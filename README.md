@@ -198,3 +198,10 @@ src/
 - "Plan my day": fit tasks into free time slots
 - Telegram bot for adding reminders by voice note
 - `.ics` calendar feed for Google Calendar
+
+## Security
+- **Sign-in:** one passcode (`APP_PASSCODE`, use 10+ characters). Wrong tries are rate-limited: 5 per address in 15 minutes, 20 overall per hour pauses sign-in, and you get a Telegram + email alert. Sessions are signed (`AUTH_SECRET`), httpOnly, 30 days. **More → Sign out all devices** ends every session at once.
+- **Every page and API needs a session**, except endpoints that check their own proof: QStash signature (`/api/deliver`), `CRON_SECRET` (`/api/cron/*`, `/api/sweep`), Telegram's secret header plus your linked chat only (`/api/telegram/webhook`), and signed, expiring links (`/api/action`, `/api/push/action`).
+- **Headers:** a strict Content-Security-Policy (same-origin only, no framing), HSTS, nosniff, Referrer-Policy, Permissions-Policy (mic/camera for this site only). API responses are `Cache-Control: private, no-store`. No cross-origin (CORS) access to the API.
+- **Data:** all input is validated (zod), and queries are parameterised (Drizzle), so no SQL is built from text. React escapes everything on screen, and email/Telegram text is escaped. Secrets live only in Vercel env vars. `.env*` files are git-ignored, and the backup leaves out tokens and keys.
+- If a secret ever leaks, rotate it in Vercel and redeploy. Rotating `AUTH_SECRET` signs out everyone and invalidates email links. After that, reconnect Telegram (More → Telegram).

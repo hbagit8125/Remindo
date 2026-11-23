@@ -22,13 +22,38 @@ export async function verifyToken<T = Record<string, unknown>>(token: string | u
   }
 }
 
-export function createSession() {
-  return signToken({ sub: "owner" }, "30d");
+// "Sign out all devices" bumps this number; sessions signed with an older one stop working.
+// Cached briefly so the check doesn't hit the database on every request.
+let epochCache: { value: number; at: number } | null = null;
+export async function currentEpoch(fresh = false) {
+  if (!fresh && epochCache && Date.now() - epochCache.at < 60_000) return epochCache.value;
+  try {
+    const { getSetting } = await import("./settings");
+    const value = (await getSetting<number>("sessionEpoch")) || 0;
+    epochCache = { value, at: Date.now() };
+    return value;
+  } catch {
+    // Database briefly unreachable: keep the last known value (sessions are still signature-checked).
+    return epochCache?.value ?? 0;
+  }
+}
+
+export async function bumpEpoch() {
+  const { setSetting } = await import("./settings");
+  const next = (await currentEpoch(true)) + 1;
+  await setSetting("sessionEpoch", next);
+  epochCache = { value: next, at: Date.now() };
+  return next;
+}
+
+export async function createSession() {
+  return signToken({ sub: "owner", ep: await currentEpoch(true) }, "30d");
 }
 
 export async function isValidSession(token: string | undefined) {
-  const p = await verifyToken<{ sub?: string }>(token);
-  return p?.sub === "owner";
+  const p = await verifyToken<{ sub?: string; ep?: number }>(token);
+  if (p?.sub !== "owner") return false;
+  return (p.ep || 0) === (await currentEpoch());
 }
 
 /** Constant-time string comparison. */

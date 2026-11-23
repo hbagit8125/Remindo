@@ -670,6 +670,27 @@ async function main() {
   assert.ok(!tomorrowPart.split("Money today")[0].includes("QA collect from Devi"), "not listed for tomorrow");
   assert.ok(!/Done today · [1-9][\s\S]*Nothing ticked off today/.test(evMail.html), "count and list agree");
 
+  // ---------------------------------------------------------------- Security
+  process.env.APP_PASSCODE = "correct horse battery";
+  const LG = await import("../src/app/api/auth/login/route");
+  const loginReq = (pass: string, ip = "1.2.3.4") =>
+    new Request("https://x/api/auth/login", { method: "POST", headers: { "x-forwarded-for": ip }, body: JSON.stringify({ passcode: pass }) });
+  for (let i = 0; i < 5; i++) assert.equal((await LG.POST(loginReq("wrong" + i))).status, 401);
+  const blocked = await LG.POST(loginReq("correct horse battery"));
+  assert.equal(blocked.status, 429, "6th try from the same address is blocked, even with the right passcode");
+  assert.ok(sent.at(-1)!.subject.includes("wrong passcodes"), "owner alerted");
+  const okOther = await LG.POST(loginReq("correct horse battery", "5.6.7.8"));
+  assert.equal(okOther.status, 200, "another address can still sign in");
+  assert.equal((await LG.POST(new Request("https://x", { method: "POST", body: JSON.stringify({ passcode: { $ne: 1 } }) }))).status, 401, "non-string passcode rejected");
+  // Sessions: sign out all devices invalidates existing tokens.
+  const AU = await import("../src/lib/auth");
+  const tok = await AU.createSession();
+  assert.equal(await AU.isValidSession(tok), true);
+  await AU.bumpEpoch();
+  assert.equal(await AU.isValidSession(tok), false, "old session rejected after sign-out-all");
+  assert.equal(await AU.isValidSession(await AU.createSession()), true);
+  assert.equal(await AU.isValidSession(await AU.signToken({ did: "x", act: "done" }, "1d")), false, "action tokens can't be used as sessions");
+
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
 

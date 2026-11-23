@@ -15,6 +15,7 @@ import {
   Send,
   Smartphone,
   Sun,
+  ShieldAlert,
   Tags,
 } from "lucide-react";
 import { api, useData } from "@/components/app/client";
@@ -32,6 +33,7 @@ type SettingsRes = {
   prefs: Prefs;
   push: { devices: number };
   telegram: { hasToken: boolean; tokenFromEnv: boolean; botUsername: string | null; connected: boolean; chatName: string | null };
+  security?: { weakPasscode: boolean };
 };
 
 function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
@@ -369,7 +371,27 @@ export function MoreScreen() {
         <button onClick={logout} className="block w-full text-left hover:bg-raised">
           <Row icon={<LogOut className="h-[18px] w-[18px]" />} title="Lock Remindo" desc="You'll need your passcode to open it again" />
         </button>
+        <button
+          onClick={async () => {
+            if (!window.confirm("Sign out of Remindo on every phone and computer, including this one?")) return;
+            await fetch("/api/auth/logout-all", { method: "POST" });
+            if ("caches" in window) await caches.delete("remindo-v2").catch(() => null);
+            window.location.href = "/login";
+          }}
+          className="block w-full text-left hover:bg-raised"
+        >
+          <Row icon={<ShieldAlert className="h-[18px] w-[18px]" />} title="Sign out all devices" desc="Use this if a phone is lost or you think someone else got in" />
+        </button>
       </Group>
+      {data?.security?.weakPasscode && (
+        <div className="mt-4 flex items-start gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            Your passcode is short, which makes it easier to guess. In Vercel → Settings → Environment Variables, set <b>APP_PASSCODE</b> to 10+ characters (a few
+            words works well), then redeploy.
+          </span>
+        </div>
+      )}
     </div>
   );
 }
