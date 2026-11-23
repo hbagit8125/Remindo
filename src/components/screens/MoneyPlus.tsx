@@ -32,7 +32,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
             btn.click();
           }
         }}
-        className="animate-sheet pb-safe max-h-[92vh] w-full overflow-y-auto rounded-t-3xl border border-line bg-[var(--bg)] p-5 md:max-w-md md:rounded-3xl"
+        className="animate-sheet pb-safe max-h-[92vh] max-h-[92dvh] w-full overflow-y-auto overscroll-contain rounded-t-3xl border border-line bg-[var(--bg)] p-5 md:max-w-md md:rounded-3xl"
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">{title}</h2>

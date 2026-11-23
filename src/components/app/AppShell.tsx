@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { AlarmClock, CalendarCheck, Home, LayoutGrid, LogOut, Moon, Plus, Search, Sun, Wallet } from "lucide-react";
 import { OfflineBanner } from "./OfflineBanner";
+import { refreshAll } from "./client";
 import { SearchOverlay } from "./SearchOverlay";
 import type { SheetMode } from "./AddSheet";
 import { SheetProvider, useSheet } from "./AddSheet";
@@ -64,6 +65,15 @@ function Frame({ children }: { children: React.ReactNode }) {
   // Register the service worker (needed for push notifications).
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => null);
+  }, []);
+
+  // Things ticked off on Telegram, email or a notification show up here within a minute
+  // while the app is open (and straight away when you switch back to it).
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible" && navigator.onLine) refreshAll();
+    }, 45_000);
+    return () => clearInterval(t);
   }, []);
 
   const [searchOpen, setSearchOpen] = useState(false);
@@ -178,7 +188,7 @@ function Frame({ children }: { children: React.ReactNode }) {
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}
 
       {/* Mobile bottom nav */}
-      <nav className="pb-safe fixed inset-x-0 bottom-0 z-40 border-t border-line bg-[var(--bg)]/90 backdrop-blur-xl md:hidden">
+      <nav className="bottom-nav pb-safe fixed inset-x-0 bottom-0 z-40 border-t border-line bg-[var(--bg)]/90 backdrop-blur-xl md:hidden">
         <div className="mx-auto grid max-w-md grid-cols-5 items-center px-2 pt-1.5">
           {NAV.slice(0, 2).map((n) => (
             <NavItem key={n.href} {...n} active={isActive(n.href)} />

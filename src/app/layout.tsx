@@ -13,6 +13,9 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  // When the phone keyboard opens, shrink the page to the space above it, so sheets and
+  // their buttons stay visible instead of sliding under the keyboard.
+  interactiveWidget: "resizes-content",
 };
 
 // Applies the saved theme before first paint so there's no flash.

@@ -99,3 +99,10 @@ input[type="number"] { -moz-appearance: textfield; }
 }
 
 .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Phones: while typing, hide the bottom bar so the keyboard leaves room for what you're editing. */
+@media (max-width: 767px) {
+  body:has(:is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), textarea, select, [contenteditable="true"]):focus) .bottom-nav {
+    display: none;
+  }
+}

@@ -48,7 +48,7 @@ export async function sendTelegram(text: string, keyboard?: Keyboard, chatId?: n
   const t = await getTelegram();
   const chat = chatId ?? t.chatId;
   if (!t.token || !chat) return null;
-  return tg<{ message_id: number }>(t.token, "sendMessage", {
+  return tg<{ message_id: number; chat?: { id: number } }>(t.token, "sendMessage", {
     chat_id: chat,
     text,
     parse_mode: "HTML",

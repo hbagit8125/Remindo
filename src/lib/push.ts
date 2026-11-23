@@ -32,6 +32,8 @@ export type PushPayload = {
   sticky?: boolean;
   /** Signed action tokens for the notification buttons. */
   actions?: { action: string; title: string; token: string }[];
+  /** Quietly replace the notification with this tag (e.g. "✓ Done"), then clear it after a few seconds. */
+  replace?: boolean;
 };
 
 /** Send to every subscribed device. Dead subscriptions are removed. Returns how many got it. */

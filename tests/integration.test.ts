@@ -38,7 +38,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
   const tgMatch = String(url).match(/api\.telegram\.org\/bot[^/]+\/(\w+)/);
   if (tgMatch) {
     tgCalls.push({ method: tgMatch[1], body: JSON.parse(String(init?.body || "{}")) });
-    const result = tgMatch[1] === "getMe" ? { id: 1, username: "test_bot", first_name: "Remindo" } : { message_id: tgCalls.length };
+    const result = tgMatch[1] === "getMe" ? { id: 1, username: "test_bot", first_name: "Remindo" } : { message_id: tgCalls.length, chat: { id: 42 } };
     return new Response(JSON.stringify({ ok: true, result }), { status: 200, headers: { "content-type": "application/json" } });
   }
   return realFetch(url as string, init);
@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -55,7 +55,7 @@ async function main() {
   const { inputToRow } = await import("../src/lib/reminder-input");
   const S = await import("../src/lib/scheduler");
   const { sendDailyDigest } = await import("../src/lib/digest");
-  const { eq } = await import("drizzle-orm");
+  const { and, eq } = await import("drizzle-orm");
 
   const now = new Date();
   const local = (offsetMin: number) => {
@@ -690,6 +690,38 @@ async function main() {
   assert.equal(await AU.isValidSession(tok), false, "old session rejected after sign-out-all");
   assert.equal(await AU.isValidSession(await AU.createSession()), true);
   assert.equal(await AU.isValidSession(await AU.signToken({ did: "x", act: "done" }, "1d")), false, "action tokens can't be used as sessions");
+
+  // ---------------------------------------------------------------- Done in one place → updated everywhere
+  const [syncR] = await createReminders([
+    { title: "QA sync bill", date: local(60 * 24 * 2).date, time: "10:00", recurrence: "none", interval: 1, priority: "normal", category: "bills" },
+  ]);
+  const [syncRow] = await db().select().from(reminders).where(eq(reminders.id, syncR.id));
+  const [syncDl] = await db()
+    .select()
+    .from(deliveries)
+    .where(and(eq(deliveries.reminderId, syncR.id), eq(deliveries.occurrenceAt, syncRow.dueAt), eq(deliveries.leadMinutes, 0)));
+  // Sending stores the Telegram message so it can be updated later.
+  await S.sendDelivery(syncDl.id);
+  const [syncDlSent] = await db().select().from(deliveries).where(eq(deliveries.id, syncDl.id));
+  assert.equal(syncDlSent.tgChatId, 42);
+  assert.ok(syncDlSent.tgMessageId);
+  // Done in the app → the Telegram alert loses its buttons and says so.
+  const tgN = tgCalls.length;
+  await S.completeOccurrence(syncR.id, syncRow.dueAt, "app");
+  const syncEdit = tgCalls.slice(tgN).find((c) => c.method === "editMessageText");
+  assert.ok(syncEdit && String(syncEdit.body.text).includes("Done in Remindo"), "telegram message updated");
+  assert.deepEqual((syncEdit!.body.reply_markup as { inline_keyboard: unknown[] }).inline_keyboard, [], "buttons removed");
+  // Undo in the app → buttons come back.
+  const tgN2 = tgCalls.length;
+  await S.uncompleteOccurrence(syncR.id, syncRow.dueAt);
+  const restore = tgCalls.slice(tgN2).find((c) => c.method === "editMessageText");
+  assert.ok((restore!.body.reply_markup as { inline_keyboard: unknown[] }).inline_keyboard.length > 0, "buttons restored");
+  // Done from email twice → second time says "Already done" (no double handling).
+  const { performAction } = await import("../src/lib/actions");
+  assert.equal((await performAction(syncDl.id, "done", "email")).title, "Marked as done");
+  const lastEdit = tgCalls.filter((c) => c.method === "editMessageText").at(-1)!;
+  assert.match(String(lastEdit.body.text), /Done from email/);
+  assert.equal((await performAction(syncDl.id, "done", "telegram")).title, "Already done");
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

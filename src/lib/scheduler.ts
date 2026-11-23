@@ -162,18 +162,22 @@ export async function sendDelivery(deliveryId: string): Promise<"sent" | "skippe
           { action: "snooze", title: "Snooze 1h", token: tokens.snooze60 },
         ],
       });
-      if (n) sentVia.push("push");
+      if (n) {
+        sentVia.push("push");
+        await db().update(deliveries).set({ pushed: true }).where(eq(deliveries.id, d.id));
+      }
     } catch (e) {
       errors.push(`push: ${(e as Error).message}`);
     }
   }
   if (!quiet && prefs.channels.telegram) {
     try {
-      const m = await sendTelegram(
-        `${r.priority === "high" ? "❗" : "⏰"} <b>${h(r.title)}</b>\n${h(headline)} · ${h(when)}${r.notes ? `\n<i>${h(r.notes)}</i>` : ""}`,
-        reminderKeyboard(d.id, r.amountPaise),
-      );
-      if (m) sentVia.push("telegram");
+      const m = await sendTelegram(telegramAlertText(r, headline, when), reminderKeyboard(d.id, r.amountPaise));
+      if (m) {
+        sentVia.push("telegram");
+        // Remember the message so ticking it off anywhere else can update it.
+        await db().update(deliveries).set({ tgChatId: m.chat?.id ?? null, tgMessageId: m.message_id }).where(eq(deliveries.id, d.id));
+      }
     } catch (e) {
       errors.push(`telegram: ${(e as Error).message}`);
     }
@@ -194,6 +198,10 @@ export async function sendDelivery(deliveryId: string): Promise<"sent" | "skippe
     .where(eq(deliveries.id, d.id));
   await maybeEscalate(d, r);
   return "sent";
+}
+
+export function telegramAlertText(r: { title: string; priority: string; notes: string | null }, headline: string, when: string) {
+  return `${r.priority === "high" ? "❗" : "⏰"} <b>${h(r.title)}</b>\n${h(headline)} · ${h(when)}${r.notes ? `\n<i>${h(r.notes)}</i>` : ""}`;
 }
 
 /** Telegram buttons under a reminder. callback_data must stay under 64 bytes. */
@@ -234,7 +242,9 @@ async function maybeEscalate(d: Delivery, r: Reminder) {
 
 // ---------------------------------------------------------------- actions
 
-export async function completeOccurrence(reminderId: string, occurrenceAt: Date) {
+export type Via = "app" | "email" | "push" | "telegram";
+
+export async function completeOccurrence(reminderId: string, occurrenceAt: Date, via: Via = "app") {
   await db().insert(completions).values({ reminderId, occurrenceAt }).onConflictDoNothing();
   await cancelQueued(reminderId, occurrenceAt);
   const [r] = await db().select().from(reminders).where(eq(reminders.id, reminderId));
@@ -243,6 +253,8 @@ export async function completeOccurrence(reminderId: string, occurrenceAt: Date)
   }
   // e.g. a medicine dose lowers the tablet count.
   if (r?.meta) await import("./life").then((m) => m.onReminderCompleted(r)).catch(() => null);
+  // Update the Telegram message and phone notification so every place shows it's done.
+  if (r) await import("./sync").then((m) => m.syncOccurrence(r, occurrenceAt, { state: "done", via })).catch(() => null);
   return r;
 }
 
@@ -254,9 +266,11 @@ export async function uncompleteOccurrence(reminderId: string, occurrenceAt: Dat
   if (r && !r.rrule && r.status === "done") {
     await db().update(reminders).set({ status: "active", updatedAt: new Date() }).where(eq(reminders.id, reminderId));
   }
+  // Undo: put the buttons back on the Telegram message.
+  if (r) await import("./sync").then((m) => m.syncOccurrence(r, occurrenceAt, { state: "undone", via: "app" })).catch(() => null);
 }
 
-export async function snoozeOccurrence(reminderId: string, occurrenceAt: Date, minutes: number) {
+export async function snoozeOccurrence(reminderId: string, occurrenceAt: Date, minutes: number, via: Via = "app") {
   // Snoozing replaces any pending escalations for this occurrence.
   await db()
     .update(deliveries)
@@ -284,6 +298,7 @@ export async function snoozeOccurrence(reminderId: string, occurrenceAt: Date, m
     })
     .returning();
   await queueDelivery(row);
+  await import("./sync").then((m) => m.syncOccurrence(r, occurrenceAt, { state: "snoozed", until: alertAt, via })).catch(() => null);
   return alertAt;
 }
 

@@ -84,6 +84,25 @@ self.addEventListener("push", (event) => {
   } catch {
     data = { title: "Remindo", body: event.data ? event.data.text() : "" };
   }
+  // Ticked off somewhere else: swap the alert for a quiet "✓ Done" and clear it shortly after.
+  if (data.replace) {
+    event.waitUntil(
+      self.registration
+        .showNotification(data.title || "Remindo", {
+          body: data.body || "",
+          tag: data.tag,
+          renotify: false,
+          silent: true,
+          icon: "/icon-192.png",
+          badge: "/badge-96.png",
+          data: { url: data.url || "/", actions: [] },
+        })
+        .then(() => new Promise((r) => setTimeout(r, 4000)))
+        .then(() => self.registration.getNotifications({ tag: data.tag }))
+        .then((list) => list.forEach((n) => n.close())),
+    );
+    return;
+  }
   const actions = (data.actions || []).map((a) => ({ action: a.action, title: a.title }));
   event.waitUntil(
     self.registration.showNotification(data.title || "Remindo", {
