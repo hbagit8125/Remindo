@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Check, Clock, Repeat, Trash2, IndianRupee, Star, CalendarDays, Plus, SkipForward } from "lucide-react";
-import { api, dayKey, fmt, hideId, refreshAll, relativeDay, TZ, unhideId } from "./client";
+import { Check, Clock, Repeat, Split, Trash2, IndianRupee, Star, CalendarDays, Plus, SkipForward } from "lucide-react";
+import { api, dayKey, fmt, hideId, openSplit, refreshAll, relativeDay, TZ, unhideId } from "./client";
 import { useToast } from "./toast";
 import { useSheet } from "./AddSheet";
 import { SwipeRow } from "./SwipeRow";
@@ -225,29 +225,37 @@ export function ReminderItem({ i, showDay, now }: { i: AgendaItem; showDay?: boo
   );
 }
 
+const txValue = (t: Transaction) => ({
+  type: t.type,
+  amount: t.amountPaise / 100,
+  category: t.category,
+  note: t.note,
+  merchant: t.merchant,
+  method: t.method,
+  date: t.date,
+  accountId: t.accountId,
+  toAccountId: t.toAccountId,
+});
+
+/** "your share ₹400 · ₹400 back · ₹400 due" under a split expense. */
+function SplitLine({ s }: { s: NonNullable<Transaction["split"]> }) {
+  if (s.paidBy !== "me")
+    return <span className="truncate">{s.iOwePaise ? <>{s.paidBy} paid · <b className="text-amber-600 dark:text-amber-400">you owe {formatINR(s.iOwePaise)}</b></> : `${s.paidBy} paid · you paid back`}</span>;
+  return (
+    <span className="truncate">
+      share {formatINR(s.myPaise)}
+      {s.backPaise > 0 && <> · <b className="text-emerald-600 dark:text-emerald-400">{formatINR(s.backPaise)} back</b></>}
+      {s.duePaise > 0 ? <> · {formatINR(s.duePaise)} due</> : <> · all settled</>}
+    </span>
+  );
+}
+
 export function TxItem({ t }: { t: Transaction }) {
   const { open } = useSheet();
   const { undoable } = useToast();
   const transfer = t.type === "transfer";
   const m = transfer ? { emoji: "⇄", color: "#64748b" } : categoryMeta(t.category);
   const income = t.type === "income";
-
-  const { toast } = useToast();
-  /** One tap: make this expense a monthly bill reminder. */
-  const remindMonthly = async () => {
-    try {
-      const r = await api<{ reminder: { id: string; title: string; dueAt: string }; existed: boolean }>(`/api/transactions/${t.id}/remind`, { method: "POST" });
-      refreshAll();
-      if (r.existed) return toast({ message: `You already have a monthly reminder for “${r.reminder.title}”` });
-      toast({
-        message: `Monthly reminder set · next ${fmt.dayShort.format(new Date(r.reminder.dueAt))}`,
-        action: { label: "Undo", onClick: () => api(`/api/reminders/${r.reminder.id}`, { method: "DELETE" }).then(refreshAll) },
-        duration: 8000,
-      });
-    } catch (e) {
-      toast({ message: (e as Error).message, tone: "error" });
-    }
-  };
 
   const remove = () => {
     hideId(t.id);
@@ -261,30 +269,16 @@ export function TxItem({ t }: { t: Transaction }) {
   return (
     <SwipeRow
       right={
-        t.type === "expense" && !t.reminderId
-          ? { label: "Remind monthly", icon: <Repeat className="h-5 w-5" />, className: "bg-indigo-500", onTrigger: remindMonthly }
+        t.type === "expense"
+          ? t.split
+            ? { label: "Split", icon: <Split className="h-5 w-5" />, className: "bg-indigo-500", onTrigger: () => openSplit(t.split!.id) }
+            : { label: "Split", icon: <Split className="h-5 w-5" />, className: "bg-indigo-500", onTrigger: () => open({ mode: "expense", id: t.id, value: txValue(t), split: true }) }
           : undefined
       }
       left={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: remove }}
     >
       <button
-        onClick={() =>
-          open({
-            mode: "expense",
-            id: t.id,
-            value: {
-              type: t.type,
-              amount: t.amountPaise / 100,
-              category: t.category,
-              note: t.note,
-              merchant: t.merchant,
-              method: t.method,
-              date: t.date,
-              accountId: t.accountId,
-              toAccountId: t.toAccountId,
-            },
-          })
-        }
+        onClick={() => (t.split ? openSplit(t.split.id) : open({ mode: "expense", id: t.id, value: txValue(t) }))}
         className="card flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left transition hover:bg-raised"
       >
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-lg" style={{ background: `${m.color}22` }}>
@@ -292,9 +286,16 @@ export function TxItem({ t }: { t: Transaction }) {
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium">{t.note || (transfer ? "Transfer" : t.category)}</span>
-          <span className="block truncate text-xs text-muted">
-            {[t.category, t.merchant, t.method && METHOD_LABEL[t.method], t.reminderId && "from bill"].filter(Boolean).join(" · ")}
-          </span>
+          {t.split ? (
+            <span className="flex items-center gap-1 truncate text-xs text-muted">
+              <Split className="h-3 w-3 shrink-0 text-indigo-500" />
+              <SplitLine s={t.split} />
+            </span>
+          ) : (
+            <span className="block truncate text-xs text-muted">
+              {[t.category, t.merchant, t.method && METHOD_LABEL[t.method], t.reminderId && "from bill"].filter(Boolean).join(" · ")}
+            </span>
+          )}
         </span>
         <span className={clsx("shrink-0 font-semibold tabular-nums", income ? "text-emerald-500" : "text-fg")}>
           {income ? "+" : transfer ? "" : "−"}

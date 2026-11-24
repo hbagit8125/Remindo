@@ -2,10 +2,11 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, ListChecks, Loader2, MapPin, Mic, MicOff, Repeat, Sparkles, Star, Trash2, Wallet, X } from "lucide-react";
+import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, ListChecks, Loader2, MapPin, Mic, MicOff, Repeat, Sparkles, Split as SplitIcon, Star, Trash2, Wallet, X } from "lucide-react";
 import { api, dayKey, hideId, refreshAll, relativeDay, unhideId, useData } from "./client";
 import { useToast } from "./toast";
 import { ReminderEditor } from "./ReminderEditor";
+import { blankSplit, previewSplit, SplitEditor, SplitToggle, type SplitValue } from "./SplitEditor";
 import { ExpenseEditor } from "./ExpenseEditor";
 import { TaskEditor } from "./TaskEditor";
 import { categoryMeta, type DueInput, type Favourite, type FavouriteSuggestion, type ReminderInput, type TaskInput, type TransactionInput } from "../types";
@@ -15,7 +16,7 @@ import { formatINR } from "@/lib/money";
 type SheetState =
   | { mode: "ask"; text?: string }
   | { mode: "reminder"; id?: string; value?: ReminderInput }
-  | { mode: "expense"; id?: string; value?: TransactionInput }
+  | { mode: "expense"; id?: string; value?: TransactionInput; split?: boolean }
   | { mode: "task"; id?: string; value?: TaskInput };
 
 export type SheetMode = SheetState["mode"];
@@ -80,7 +81,7 @@ export function SheetProvider({ children }: { children: React.ReactNode }) {
             <div className="px-5 pb-6 pt-2">
               {state.mode === "ask" && <AskPanel close={close} initialText={state.text} />}
               {state.mode === "reminder" && <ReminderPanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
-              {state.mode === "expense" && <ExpensePanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
+              {state.mode === "expense" && <ExpensePanel key={state.id || "new"} id={state.id} initial={state.value} startSplit={state.split} close={close} />}
               {state.mode === "task" && <TaskPanel key={state.id || "new"} id={state.id} initial={state.value} close={close} />}
             </div>
           </div>
@@ -149,6 +150,7 @@ const EXAMPLES = [
   "How much did I spend on food this month?",
   "What's due this week?",
   "Spent 450 on lunch at Zomato",
+  "Paid 1200 for dinner with Arun and Riya, split equally",
   "Petrol 1200 yesterday, card",
   "Call mom tomorrow at 7pm",
   "Buy milk and eggs",
@@ -165,7 +167,11 @@ type Draft =
   | { kind: "due"; value: DueInput }
   | { kind: "reminder"; value: ReminderInput }
   | { kind: "expense"; value: TransactionInput }
-  | { kind: "task"; value: TaskInput };
+  | { kind: "task"; value: TaskInput }
+  | { kind: "split"; value: SplitDraft };
+
+/** A split bill the AI found ("Paid 1200 for dinner with Arun and Riya, split equally"). */
+type SplitDraft = SplitValue & { title: string; amount: number; category: string; date: string };
 
 function useSpeech(onFinal: (text: string) => void, onText: (text: string) => void, lang = "en-IN") {
   const recRef = useRef<SpeechRec | null>(null);
@@ -252,6 +258,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
         transactions: TransactionInput[];
         tasks: TaskInput[];
         dues?: DueInput[];
+        splits?: SplitDraft[];
         listItems?: ListDraft[];
         placeReminders?: PlaceDraft[];
         warning?: string;
@@ -265,6 +272,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
       setProposals(r.proposals || []);
       setDoneIds([]);
       setDrafts([
+        ...(r.splits || []).map((value) => ({ kind: "split" as const, value })),
         ...r.transactions.map((value) => ({ kind: "expense" as const, value })),
         ...(r.placeReminders || []).map((value) => ({ kind: "place" as const, value })),
         ...(r.listItems || []).map((value) => ({ kind: "list" as const, value })),
@@ -314,7 +322,13 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
     const dues = drafts.filter((d) => d.kind === "due").map((d) => d.value);
     const listAdds = drafts.filter((d) => d.kind === "list").map((d) => d.value as ListDraft);
     const placeAdds = drafts.filter((d) => d.kind === "place").map((d) => d.value as PlaceDraft);
+    const splitAdds = drafts.filter((d) => d.kind === "split").map((d) => d.value as SplitDraft);
     try {
+      for (const sp of splitAdds) {
+        const err = previewSplit(sp.amount, sp).error;
+        if (err) throw new Error(`${sp.title}: ${err}`);
+      }
+      for (const sp of splitAdds) await api("/api/splits", { method: "POST", json: sp });
       if (transactions.some((t) => !(t as TransactionInput).amount)) throw new Error("Add an amount to each money entry");
       if (reminders.length) await api("/api/reminders", { method: "POST", json: { items: reminders } });
       if (transactions.length) await api("/api/transactions", { method: "POST", json: { items: transactions } });
@@ -323,6 +337,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
       for (const l of listAdds) await api("/api/lists/add", { method: "POST", json: l });
       if (placeAdds.length) await api("/api/place-reminders", { method: "POST", json: { items: placeAdds } });
       const parts = [
+        splitAdds.length && `${splitAdds.length} split bill${splitAdds.length > 1 ? "s" : ""}`,
         placeAdds.length && `${placeAdds.length} place reminder${placeAdds.length > 1 ? "s" : ""}`,
         listAdds.length && `${listAdds.reduce((n, l) => n + l.items.length, 0)} list item${listAdds.reduce((n, l) => n + l.items.length, 0) > 1 ? "s" : ""}`,
         dues.length && `${dues.length} due${dues.length > 1 ? "s" : ""}`,
@@ -496,6 +511,8 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
                     <ListDraftEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "list", value: v } : x)))} />
                   ) : d.kind === "due" ? (
                     <DueEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "due", value: v } : x)))} />
+                  ) : d.kind === "split" ? (
+                    <SplitDraftEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "split", value: v } : x)))} />
                   ) : d.kind === "task" ? (
                     <TaskEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "task", value: v } : x)))} />
                   ) : (
@@ -615,7 +632,50 @@ function DueEditor({ value, onChange }: { value: DueInput; onChange: (v: DueInpu
   );
 }
 
+function SplitDraftEditor({ value, onChange }: { value: SplitDraft; onChange: (v: SplitDraft) => void }) {
+  return (
+    <div className="grid gap-3">
+      <div className="grid grid-cols-[1fr_7rem] gap-3">
+        <div>
+          <label className={label}>What for</label>
+          <input className={field} value={value.title} onChange={(e) => onChange({ ...value, title: e.target.value })} />
+        </div>
+        <div>
+          <label className={label}>Bill (₹)</label>
+          <input type="number" inputMode="decimal" className={field} value={value.amount || ""} onChange={(e) => onChange({ ...value, amount: Number(e.target.value) || 0 })} />
+        </div>
+      </div>
+      <SplitEditor total={value.amount} value={value} onChange={(v) => onChange({ ...value, ...v })} />
+    </div>
+  );
+}
+
 function DraftSummary({ d }: { d: Draft }) {
+  if (d.kind === "split") {
+    const v = d.value;
+    const p = previewSplit(v.amount, v);
+    const mine = p.shares?.find((x) => x.person === "me")?.sharePaise || 0;
+    const back = p.shares?.filter((x) => x.person !== "me").reduce((a, x) => a + x.sharePaise, 0) || 0;
+    return (
+      <>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-indigo-500/15 text-indigo-500">
+          <SplitIcon className="h-5 w-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-medium">
+            Split {v.title} · {formatINR(Math.round(v.amount * 100))}
+          </span>
+          <span className={clsx("block truncate text-xs", p.error ? "text-amber-600" : "text-muted")}>
+            {p.error
+              ? p.error
+              : v.paidBy === "me"
+                ? `your share ${formatINR(mine)} · ${formatINR(back)} back from ${v.people.filter((x) => x.person !== "me").map((x) => x.person).join(", ")}`
+                : `${v.paidBy} paid · you owe ${formatINR(mine)}`}
+          </span>
+        </span>
+      </>
+    );
+  }
   if (d.kind === "place") {
     return (
       <>
@@ -726,11 +786,13 @@ function PanelActions({
   disabled,
   onSave,
   onDelete,
+  saveLabel = "Save",
 }: {
   saving: boolean;
   disabled?: boolean;
   onSave: () => void;
   onDelete?: () => void;
+  saveLabel?: string;
 }) {
   return (
     <div className="mt-6 flex gap-2">
@@ -745,7 +807,7 @@ function PanelActions({
         className="flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-fg text-sm font-semibold text-[var(--bg)] hover:opacity-90 disabled:opacity-40"
       >
         {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-        Save
+        {saveLabel}
       </button>
     </div>
   );
@@ -871,9 +933,12 @@ function QuickMoney({ onScanned }: { onScanned: (v: TransactionInput) => void })
   );
 }
 
-function ExpensePanel({ id, initial, close }: { id?: string; initial?: TransactionInput; close: () => void }) {
+function ExpensePanel({ id, initial, startSplit, close }: { id?: string; initial?: TransactionInput; startSplit?: boolean; close: () => void }) {
   const { toast, undoable } = useToast();
   const [value, setValue] = useState<TransactionInput>(initial || blankExpense());
+  const [splitOn, setSplitOn] = useState(Boolean(startSplit));
+  const [split, setSplit] = useState<SplitValue>(blankSplit());
+  const splitPreview = previewSplit(value.amount, split);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [asFavourite, setAsFavourite] = useState(false);
@@ -884,6 +949,33 @@ function ExpensePanel({ id, initial, close }: { id?: string; initial?: Transacti
     setSaving(true);
     try {
       if (value.type === "transfer" && (!value.accountId || !value.toAccountId)) throw new Error("Pick both accounts for a transfer");
+      if (splitOn && value.type === "expense") {
+        if (splitPreview.error) throw new Error(splitPreview.error);
+        await api("/api/splits", {
+          method: "POST",
+          json: {
+            title: value.note?.trim() || value.category,
+            amount: value.amount,
+            category: value.category,
+            date: value.date,
+            paidBy: split.paidBy,
+            method: split.method,
+            people: split.people,
+            accountId: value.accountId || null,
+            transactionId: id || null,
+          },
+        });
+        const mine = splitPreview.shares?.find((x) => x.person === "me")?.sharePaise || 0;
+        toast({
+          message:
+            split.paidBy === "me"
+              ? `Split saved · you get back ${formatINR(Math.round(value.amount * 100) - mine)}`
+              : `Split saved · you owe ${split.paidBy} ${formatINR(mine)}`,
+        });
+        refreshAll();
+        close();
+        return;
+      }
       if (id) await api(`/api/transactions/${id}`, { method: "PATCH", json: value });
       else await api("/api/transactions", { method: "POST", json: { items: [value] } });
       if (asFavourite && !id) {
@@ -928,15 +1020,24 @@ function ExpensePanel({ id, initial, close }: { id?: string; initial?: Transacti
           setErr(""); // e.g. "Pick both accounts" goes away once you pick them
         }}
         extraCategories={extra}
-        autoFocus={!id}
+        autoFocus={!id && !startSplit}
       />
-      {!id && value.type !== "transfer" && (
+      {value.type === "expense" && (
+        <div className={clsx("mt-4 rounded-2xl", !splitOn && "border border-line px-3 py-2")}>
+          {splitOn ? (
+            <SplitEditor total={value.amount} value={split} onChange={setSplit} onTurnOff={() => setSplitOn(false)} />
+          ) : (
+            <SplitToggle on={false} onToggle={() => setSplitOn(true)} />
+          )}
+        </div>
+      )}
+      {!id && value.type !== "transfer" && !splitOn && (
         <label className="mt-4 flex items-center gap-2 text-sm text-muted">
           <input type="checkbox" checked={asFavourite} onChange={(e) => setAsFavourite(e.target.checked)} className="h-4 w-4 accent-indigo-500" />
           Also save as a one-tap favourite
         </label>
       )}
-      {id && value.type === "expense" && (
+      {id && value.type === "expense" && !splitOn && (
         <button
           type="button"
           onClick={async () => {
@@ -958,7 +1059,13 @@ function ExpensePanel({ id, initial, close }: { id?: string; initial?: Transacti
         </button>
       )}
       {err && <p className="mt-3 text-sm text-rose-500">{err}</p>}
-      <PanelActions saving={saving} disabled={!value.amount || value.amount <= 0} onSave={save} onDelete={id ? remove : undefined} />
+      <PanelActions
+        saving={saving}
+        disabled={!value.amount || value.amount <= 0 || (splitOn && Boolean(splitPreview.error))}
+        onSave={save}
+        onDelete={id ? remove : undefined}
+        saveLabel={splitOn ? "Save & split" : undefined}
+      />
     </>
   );
 }

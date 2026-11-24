@@ -146,12 +146,12 @@ async function onMessage(m: TgMessage) {
     );
   }
 
-  if (!parsed.reminders.length && !parsed.transactions.length && !parsed.tasks.length && !parsed.dues?.length && !parsed.listItems?.length && !parsed.placeReminders?.length) {
+  if (!parsed.reminders.length && !parsed.transactions.length && !parsed.tasks.length && !parsed.dues?.length && !parsed.splits?.length && !parsed.listItems?.length && !parsed.placeReminders?.length) {
     return sendTelegram("I couldn't find a reminder or expense in that. Try: <i>Spent 150 on lunch</i> or <i>Pay rent on the 5th every month</i>");
   }
   const [draft] = await db()
     .insert(telegramDrafts)
-    .values({ payload: { reminders: parsed.reminders, transactions: parsed.transactions, tasks: parsed.tasks, dues: parsed.dues || [], listItems: parsed.listItems || [], placeReminders: parsed.placeReminders || [] } })
+    .values({ payload: { reminders: parsed.reminders, transactions: parsed.transactions, tasks: parsed.tasks, dues: parsed.dues || [], splits: parsed.splits || [], listItems: parsed.listItems || [], placeReminders: parsed.placeReminders || [] } })
     .returning();
   const warn = parsed.engine === "local" ? "\n\n<i>⚠️ AI was unavailable, so I used the simple parser. Please check.</i>" : "";
   await sendTelegram(`${draftText(parsed)}${warn}`, [
@@ -212,10 +212,20 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
     await createTransactions(p.transactions || []);
     await createTasks(p.tasks || []);
     await createDues(p.dues || []);
+    const splitLines: string[] = [];
+    for (const sp of p.splits || []) {
+      try {
+        const { createSplit, splitSummary } = await import("@/lib/splits");
+        const made = await createSplit(sp);
+        splitLines.push(splitSummary(made));
+      } catch (e) {
+        splitLines.push(`⚠️ ${sp.title}: ${(e as Error).message}`);
+      }
+    }
     for (const l of p.listItems || []) await addToList(l.list, l.items);
     if (p.placeReminders?.length) await addPlaceReminders(p.placeReminders);
     await answerCallback(q.id, "Saved");
-    return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ <b>Saved</b>`);
+    return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ <b>Saved</b>${splitLines.length ? `\n${splitLines.map(h).join("\n")}` : ""}`);
   }
   return answerCallback(q.id);
 }
@@ -230,6 +240,11 @@ function draftText(p: ParseResult) {
   }
   for (const d of p.dues || []) {
     lines.push(`🤝 ${d.direction === "they_owe" ? `${h(d.person)} owes you` : `You owe ${h(d.person)}`} ${formatINR(Math.round(d.amount * 100))}${d.note ? ` · ${h(d.note)}` : ""}`);
+  }
+  for (const sp of p.splits || []) {
+    const who = sp.people.map((x) => (x.person === "me" ? "you" : x.person)).join(", ");
+    const how = sp.method === "equal" ? "equally" : sp.method === "percent" ? "by %" : sp.method === "shares" ? "by shares" : "by amounts";
+    lines.push(`🧾 Split ${h(sp.title)} ${formatINR(Math.round(Number(sp.amount) * 100))} ${how} · ${h(who)}${sp.paidBy && sp.paidBy !== "me" ? ` · ${h(sp.paidBy)} paid` : ""}`);
   }
   for (const r of p.placeReminders || []) {
     lines.push(`📍 ${h(r.text)} · when you ${r.on === "arrive" ? "reach" : "leave"} ${h(r.place)} (works while the app is open)`);

@@ -12,6 +12,7 @@ import { SearchOverlay } from "./SearchOverlay";
 import type { SheetMode } from "./AddSheet";
 import { SheetProvider, useSheet } from "./AddSheet";
 import { ToastProvider } from "./toast";
+import { SplitDetailHost } from "@/components/screens/SplitsScreen";
 
 const NAV = [
   { href: "/", label: "Home", icon: Home, match: ["/"] },
@@ -25,6 +26,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <ToastProvider>
       <SheetProvider>
         <Frame>{children}</Frame>
+        <SplitDetailHost />
       </SheetProvider>
     </ToastProvider>
   );

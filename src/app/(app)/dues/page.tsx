@@ -1,5 +1,5 @@
-import { DuesScreen } from "@/components/screens/MoneyPlus";
+import { SplitsScreen } from "@/components/screens/SplitsScreen";
 
 export default function Page() {
-  return <DuesScreen />;
+  return <SplitsScreen />;
 }

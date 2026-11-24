@@ -9,14 +9,14 @@ const TABS = [
   { href: "/insights", label: "Insights" },
   { href: "/accounts", label: "Accounts" },
   { href: "/goals", label: "Goals" },
-  { href: "/dues", label: "Dues" },
+  { href: "/dues", label: "Splits" },
 ];
 
 /** Sub-navigation for the Money tab. */
 export function MoneyTabs() {
   const path = usePathname();
   return (
-    // All five fit on a phone (no hidden "Dues" off to the side).
+    // All five fit on a phone (no hidden "Splits" off to the side).
     <div className="mb-5 grid grid-cols-5 gap-1 rounded-2xl bg-raised p-1 md:flex md:w-fit md:gap-1.5">
       {TABS.map((t) => (
         <Link

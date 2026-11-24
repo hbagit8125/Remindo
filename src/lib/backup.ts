@@ -13,6 +13,8 @@ const TABLES = {
   budgets: T.budgets,
   favourites: T.favourites,
   dues: T.dues,
+  splits: T.splits,
+  splitGroups: T.splitGroups,
   goals: T.goals,
   goalContributions: T.goalContributions,
   documents: T.documents,

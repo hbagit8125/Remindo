@@ -143,7 +143,41 @@ export const dues = pgTable("dues", {
   note: text("note"),
   transactionId: uuid("transaction_id"),
   reminderId: uuid("reminder_id"),
+  /** Set when this due is someone's share of a split bill. */
+  splitId: uuid("split_id"),
   settledAt: timestamp("settled_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * A split bill. Each other person's share is a row in `dues` (they owe you, or you owe
+ * whoever paid), so balances, reminders and "paid back" work the same as plain dues.
+ */
+export const splits = pgTable("splits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: text("title").notNull(),
+  totalPaise: integer("total_paise").notNull(),
+  category: text("category").notNull().default("Other"),
+  date: text("date").notNull(),
+  /** "me", or the friend's name. */
+  paidBy: text("paid_by").notNull().default("me"),
+  method: text("method").notNull().default("equal"), // equal | amount | percent | shares
+  /** Everyone's share as entered: [{ person, value, sharePaise }] ("me" for you). */
+  shares: jsonb("shares").$type<{ person: string; value: number; sharePaise: number }[]>().notNull(),
+  myPaise: integer("my_paise").notNull().default(0),
+  /** The expense: the full bill when you paid, your share when a friend paid. */
+  transactionId: uuid("transaction_id"),
+  accountId: uuid("account_id"),
+  reminderId: uuid("reminder_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Saved groups of people to split with ("Flatmates"). */
+export const splitGroups = pgTable("split_groups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  members: text("members").array().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -318,3 +352,5 @@ export const listItems = pgTable(
   },
   (t) => [index("list_items_list_idx").on(t.listId)],
 );
+export type Split = typeof splits.$inferSelect;
+export type Due = typeof dues.$inferSelect;

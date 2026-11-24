@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -393,9 +393,18 @@ async function main() {
   const sms = P3.parseLocally("Rs.450.00 debited from A/c XX1234 on 19-11-26 to VPA swiggy@icici UPI Ref 123456. Avl Bal Rs 12,000");
   assert.equal(sms.transactions[0].amount, 450);
   assert.equal(sms.transactions[0].merchant, "Swiggy");
+  // A shared bill is one split (the split records the expense), not an expense + a due.
   const split = P3.parseLocally("Paid 1200 for dinner, Arun owes me 600");
-  assert.equal(split.transactions[0].amount, 1200);
-  assert.equal(split.dues![0].person, "Arun");
+  assert.equal(split.transactions.length, 0);
+  assert.equal(split.dues!.length, 0);
+  assert.deepEqual(split.splits![0].people, [{ person: "me", value: 600 }, { person: "Arun", value: 600 }]);
+  const eq3 = P3.parseLocally("Paid 1200 for dinner with Arun and Riya, split equally").splits![0];
+  assert.equal(eq3.method, "equal");
+  assert.equal(eq3.people.length, 3);
+  const friendPaid = P3.parseLocally("Sneha paid 900 for movie, split with me and Manu").splits![0];
+  assert.equal(friendPaid.paidBy, "Sneha");
+  assert.equal(P3.parseLocally("split the cab 600 with Arun").splits![0].amount, 600);
+  assert.equal(P3.parseLocally("Arun owes me 600").dues![0].person, "Arun");
 
   // Telegram photo when Gemini is down → friendly error, no crash.
   process.env.GEMINI_API_KEY = "test";
@@ -693,7 +702,7 @@ async function main() {
 
   // ---------------------------------------------------------------- Done in one place → updated everywhere
   const [syncR] = await createReminders([
-    { title: "QA sync bill", date: local(60 * 24 * 2).date, time: "10:00", recurrence: "none", interval: 1, priority: "normal", category: "bills" },
+    { title: "QA sync bill", date: local(60 * 24 * 2).date, time: "10:00", recurrence: "none", interval: 1, priority: "high", category: "bills" }, // high: not held by quiet hours
   ]);
   const [syncRow] = await db().select().from(reminders).where(eq(reminders.id, syncR.id));
   const [syncDl] = await db()
@@ -776,6 +785,79 @@ async function main() {
   assert.ok(tgCalls.slice(tgBeforePlace).some((c) => String(c.body.text).includes("Submit the form")), "telegram copy sent");
   assert.equal(await PL.firePlaceReminder(qaPr.id), null, "doesn't fire again");
   assert.ok(Math.abs(PL.distanceM({ lat: 8.5241, lng: 76.9366 }, { lat: 8.5251, lng: 76.9366 }) - 111) < 2, "distance maths");
+
+  // ---------------------------------------------------------------- Split bills
+  const SP = await import("../src/lib/splits");
+  const { dues } = await import("../src/db");
+  const MPs = await import("../src/lib/moneyplus");
+  // Share maths.
+  assert.deepEqual(SP.computeShares(100000, "equal", [{ person: "me", value: 0 }, { person: "Arun", value: 0 }, { person: "Riya", value: 0 }]).map((x) => x.sharePaise), [33334, 33333, 33333]);
+  assert.deepEqual(SP.computeShares(120000, "percent", [{ person: "me", value: 40 }, { person: "Arun", value: 30 }, { person: "Riya", value: 30 }]).map((x) => x.sharePaise), [48000, 36000, 36000]);
+  assert.deepEqual(SP.computeShares(90000, "shares", [{ person: "me", value: 1 }, { person: "Arun", value: 2 }]).map((x) => x.sharePaise), [30000, 60000]);
+  assert.throws(() => SP.computeShares(120000, "amount", [{ person: "me", value: 500 }, { person: "Arun", value: 600 }]), /₹100 left to assign/);
+  assert.throws(() => SP.computeShares(120000, "percent", [{ person: "me", value: 50 }, { person: "Arun", value: 40 }]), /90%/);
+  assert.throws(() => SP.computeShares(1000, "equal", [{ person: "Arun", value: 0 }, { person: "arun", value: 0 }]), /twice/);
+
+  // You paid ₹1,200, split equally with Arun and Riya.
+  const sp1 = (await SP.createSplit({ title: "QA Dinner", amount: 1200, category: "Food", date: local(0).date, paidBy: "me", method: "equal", people: [{ person: "me" }, { person: "arun" }, { person: "Riya" }] }))!;
+  assert.equal(sp1.myPaise, 40000);
+  assert.equal(sp1.owedPaise, 80000);
+  const [sp1Tx] = await db().select().from(transactions).where(eq(transactions.id, sp1.transactionId!));
+  assert.equal(sp1Tx.amountPaise, 120000, "full bill counts as your expense");
+  assert.deepEqual(sp1.dues.map((d) => [d.person, d.direction, d.amountPaise]), [["Arun", "they_owe", 40000], ["Riya", "they_owe", 40000]]);
+  const [sp1R] = await db().select().from(reminders).where(eq(reminders.id, sp1.reminderId!));
+  assert.match(sp1R.title, /Collect ₹400 from Arun, ₹400 from Riya/);
+  // Arun pays back → income Refund; undo removes it.
+  const spArunDue = sp1.dues.find((d) => d.person === "Arun")!;
+  await MPs.settleDue(spArunDue.id, { log: true });
+  const sp1v = (await SP.getSplit(sp1.id))!;
+  assert.equal(sp1v.backPaise, 40000);
+  const arunSettled = sp1v.dues.find((d) => d.person === "Arun")!;
+  const [refund] = await db().select().from(transactions).where(eq(transactions.id, arunSettled.transactionId!));
+  assert.equal(refund.type, "income");
+  assert.equal(refund.category, "Refund");
+  assert.match(refund.note!, /Arun paid back · QA Dinner/);
+  await MPs.unsettleDue(spArunDue.id);
+  assert.equal((await db().select().from(transactions).where(eq(transactions.id, refund.id))).length, 0, "undo removes the payback");
+  // Settle up with everyone → follow-up reminder closes.
+  await MPs.settlePerson("arun");
+  await MPs.settlePerson("Riya");
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, sp1.reminderId!)))[0].status, "archived", "reminder closes when all paid");
+  // Edit: change to amounts; settled people stay ticked and their payback follows.
+  const sp1e = (await SP.updateSplit(sp1.id, { title: "QA Dinner", amount: 1200, category: "Food", date: local(0).date, paidBy: "me", method: "amount", people: [{ person: "me", value: 600 }, { person: "Arun", value: 300 }, { person: "Riya", value: 300 }] }))!;
+  assert.equal(sp1e.myPaise, 60000);
+  const arunAfter = sp1e.dues.find((d) => d.person === "Arun")!;
+  assert.ok(arunAfter.settledAt);
+  assert.equal((await db().select().from(transactions).where(eq(transactions.id, arunAfter.transactionId!)))[0].amountPaise, 30000);
+
+  // A friend paid: your share is the expense; ticking it paid doesn't add another.
+  const sp2 = (await SP.createSplit({ title: "QA Groceries", amount: 500, category: "Groceries", date: local(0).date, paidBy: "Sneha", method: "equal", people: [{ person: "me" }, { person: "Sneha" }] }))!;
+  const [sp2Tx] = await db().select().from(transactions).where(eq(transactions.id, sp2.transactionId!));
+  assert.equal(sp2Tx.amountPaise, 25000);
+  assert.match(sp2Tx.note!, /Sneha paid/);
+  assert.deepEqual(sp2.dues.map((d) => [d.person, d.direction, d.amountPaise]), [["Sneha", "i_owe", 25000]]);
+  const spTxCount = (await db().select().from(transactions)).length;
+  await MPs.settleDue(sp2.dues[0].id, { log: true });
+  assert.equal((await db().select().from(transactions)).length, spTxCount, "no second expense when you pay your share");
+  await assert.rejects(() => SP.createSplit({ title: "x", amount: 100, date: local(0).date, paidBy: "Sneha", people: [{ person: "Arun" }, { person: "Sneha" }] }), /not in this split/);
+
+  // Splitting an expense you already logged.
+  const [oldTx] = await ct2([{ type: "expense", amount: 900, category: "Transport", note: "QA cab", date: local(0).date }]);
+  const sp3 = (await SP.createSplit({ title: "QA cab", amount: 900, category: "Transport", date: local(0).date, people: [{ person: "me" }, { person: "Manu" }], transactionId: oldTx.id }))!;
+  assert.equal(sp3.transactionId, oldTx.id, "no new expense");
+  // Overview + delete (keeps the expense unless asked).
+  const ov = await SP.splitsOverview();
+  assert.ok(ov.people.some((p) => p.person === "Manu" && p.theyOwe === 45000));
+  await SP.deleteSplit(sp3.id);
+  assert.equal((await db().select().from(transactions).where(eq(transactions.id, oldTx.id))).length, 1, "expense kept");
+  assert.equal((await db().select().from(dues).where(eq(dues.splitId, sp3.id))).length, 0);
+  await SP.deleteSplit(sp2.id);
+  assert.equal((await db().select().from(transactions).where(eq(transactions.id, sp2.transactionId!))).length, 0, "friend-paid share expense removed");
+
+  // Settling a plain due archives its reminder (fixes old 'Collect…' showing in today's list).
+  const [plain] = await MPs.createDues([{ person: "QA Hiba", direction: "they_owe", amount: 330 }]);
+  await MPs.settleDue(plain.id, { log: true });
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, plain.reminderId!)))[0].status, "archived");
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
