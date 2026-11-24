@@ -84,7 +84,7 @@ Vercel's free plan only runs cron jobs once a day, so delivery has three layers:
 |---|---|
 | **Vercel cron** (daily ~7am IST) | Queues every alert for the next 48h in QStash and sends the morning digest |
 | **Upstash QStash** | Calls `/api/deliver` at the exact minute each alert is due |
-| **cron-job.org** (every 5 min) | `/api/sweep` plans ahead and sends anything that was due but didn't go out |
+| **cron-job.org** (every 30 min) | `/api/sweep` plans ahead and sends anything that was due but didn't go out. Not more often: each run wakes the database, and Neon's free plan allows about 400 awake hours a month |
 
 New reminders due within 48h are queued right away. Each alert is a database row
 with a unique key, and sending first "claims" the row, so the layers never send
@@ -135,7 +135,7 @@ Next.js 16 · TypeScript · Tailwind v4 · Drizzle ORM · Neon Postgres · Upsta
 1. Sign up at **cron-job.org**, then **Create cronjob**.
 2. URL: `https://YOUR-APP.vercel.app/api/sweep?secret=YOUR_CRON_SECRET`
 3. Schedule: every 5 minutes. Save.
-
+3. Schedule: every 30 minutes. Save. (QStash sends each alert on time; this only catches anything that slipped through.)
 ### 7. Test it
 - Open the app, enter your passcode, then type *"test reminder in 3 minutes"*. You should get an email about 3 minutes later.
 - Click **Done** in the email. The reminder shows as done on the dashboard.

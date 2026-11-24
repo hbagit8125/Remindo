@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, deliveries, reminders } from "@/db";
-import { completeOccurrence, snoozeOccurrence } from "./scheduler";
+import { completeOccurrence, snoozeOccurrence, type Via } from "./scheduler";
 import { logReminderPayment } from "./finance";
 import { formatINR } from "./money";
 import { config } from "./config";
@@ -21,14 +21,22 @@ export type ActionResult = {
  * Done / snooze / log for one alert. Shared by email links, push notification
  * buttons and Telegram buttons so they all behave the same.
  */
-export async function performAction(deliveryId: string, act: ActionName): Promise<ActionResult> {
+export async function performAction(deliveryId: string, act: ActionName, via: Via = "app"): Promise<ActionResult> {
   const [d] = await db().select().from(deliveries).where(eq(deliveries.id, deliveryId));
   if (!d) return { ok: false, title: "Not found", message: "This reminder no longer exists." };
   const [r] = await db().select().from(reminders).where(eq(reminders.id, d.reminderId));
   if (!r) return { ok: false, title: "Not found", message: "This reminder was deleted." };
 
   if (act === "done") {
-    await completeOccurrence(r.id, d.occurrenceAt);
+    const [{ completions }, { and: andOp }] = await Promise.all([import("@/db"), import("drizzle-orm")]);
+    const [already] = await db()
+      .select()
+      .from(completions)
+      .where(andOp(eq(completions.reminderId, r.id), eq(completions.occurrenceAt, d.occurrenceAt)));
+    if (already) {
+      return { ok: true, title: "Already done", message: `"${r.title}" was already ticked off.`, canLog: r.amountPaise || undefined };
+    }
+    await completeOccurrence(r.id, d.occurrenceAt, via);
     return {
       ok: true,
       title: "Marked as done",
@@ -53,7 +61,7 @@ export async function performAction(deliveryId: string, act: ActionName): Promis
     const tomorrow = fmtLocal(new Date(Date.now() + 86400000), "yyyy-MM-dd");
     minutes = Math.max(1, Math.round((localToUtc(tomorrow, config.allDayHour).getTime() - Date.now()) / 60000));
   }
-  const until = await snoozeOccurrence(r.id, d.occurrenceAt, minutes);
+  const until = await snoozeOccurrence(r.id, d.occurrenceAt, minutes, via);
   return {
     ok: true,
     title: "Snoozed",

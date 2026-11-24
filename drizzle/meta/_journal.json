@@ -43,6 +43,13 @@
       "when": 1795102302955,
       "tag": "0005_life",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795445093647,
+      "tag": "0006_sync",
+      "breakpoints": true
     }
   ]
 }

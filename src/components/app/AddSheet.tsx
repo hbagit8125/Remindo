@@ -71,7 +71,7 @@ export function SheetProvider({ children }: { children: React.ReactNode }) {
         <div className="animate-fade fixed inset-0 z-[60] flex items-end justify-center bg-black/50 backdrop-blur-sm md:items-center md:p-6" onClick={close}>
           <div
             onClick={(e) => e.stopPropagation()}
-            className="animate-sheet pb-safe max-h-[92vh] w-full overflow-y-auto rounded-t-3xl border border-line bg-[var(--bg)] md:max-w-xl md:rounded-3xl"
+            className="animate-sheet pb-safe max-h-[92vh] max-h-[92dvh] w-full overflow-y-auto overscroll-contain rounded-t-3xl border border-line bg-[var(--bg)] md:max-w-xl md:rounded-3xl"
           >
             <div className="sticky top-0 z-10 bg-[var(--bg)]/95 px-5 pt-3 backdrop-blur">
               <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-[var(--line)] md:hidden" />
@@ -339,13 +339,27 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
         <textarea
           rows={2}
           autoFocus
+          enterKeyHint="enter"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            // Grow with the text (up to about a third of the screen), then scroll.
+            const el = e.target;
+            el.style.height = "auto";
+            el.style.height = `${Math.min(el.scrollHeight, Math.round(window.innerHeight * 0.35))}px`;
+          }}
+          onFocus={(e) => {
+            // Keep the box and the Continue button in view once the keyboard is up.
+            const el = e.currentTarget;
+            setTimeout(() => el.scrollIntoView({ block: "center", behavior: "smooth" }), 300);
+          }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              parse(text);
-            }
+            // Phones: Enter makes a new line; only the button sends it.
+            // Computers: Enter sends, Shift+Enter makes a new line.
+            if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+            if (window.matchMedia("(pointer: coarse)").matches) return;
+            e.preventDefault();
+            parse(text);
           }}
           placeholder={speech.listening ? "Listening…" : "Spent 300 on groceries · Call mom at 7pm · …"}
           className="min-h-[56px] flex-1 resize-none rounded-2xl border border-line bg-raised px-4 py-3 text-[15px] text-fg outline-none placeholder:text-subtle focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20"

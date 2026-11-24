@@ -170,7 +170,7 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
 
   // Reminder buttons: a:<action>:<deliveryId>
   if (kind === "a" && (ACTIONS as readonly string[]).includes(a) && b) {
-    const res = await performAction(b, a as ActionName);
+    const res = await performAction(b, a as ActionName, "telegram");
     await answerCallback(q.id, res.title);
     const base = h(msg.text || "");
     const icon = a === "done" ? "✅" : a === "log" ? "💸" : "⏰";

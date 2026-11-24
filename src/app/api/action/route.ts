@@ -49,7 +49,7 @@ export async function POST(req: Request) {
   if (!payload) return page("Link expired", "This link is invalid or older than 14 days. Use the dashboard instead.", false);
   if (!(ACTIONS as readonly string[]).includes(payload.act)) return page("Unknown action", "That link isn't recognised.", false);
 
-  const res = await performAction(payload.did, payload.act as ActionName);
+  const res = await performAction(payload.did, payload.act as ActionName, "email");
   if (res.canLog) {
     // Bill reminder: offer to log the payment as an expense.
     const logToken = await signToken({ did: payload.did, act: "log" }, "14d");

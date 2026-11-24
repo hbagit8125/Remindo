@@ -1,4 +1,5 @@
 import {
+  bigint,
   pgTable,
   uuid,
   text,
@@ -58,6 +59,11 @@ export const deliveries = pgTable(
     /** Push/Telegram were held back by quiet hours (email still went). Shown in the morning digest. */
     held: boolean("held").notNull().default(false),
     qstashId: text("qstash_id"),
+    /** The Telegram message for this alert, so it can be updated when you tick it off elsewhere. */
+    tgChatId: bigint("tg_chat_id", { mode: "number" }),
+    tgMessageId: integer("tg_message_id"),
+    /** A phone notification was shown for this alert. */
+    pushed: boolean("pushed").notNull().default(false),
     attempts: integer("attempts").notNull().default(0),
     sentAt: timestamp("sent_at", { withTimezone: true }),
     error: text("error"),

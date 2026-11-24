@@ -9,5 +9,5 @@ export async function POST(req: Request) {
   if (!payload || !(ACTIONS as readonly string[]).includes(payload.act)) {
     return NextResponse.json({ error: "Invalid or expired" }, { status: 400 });
   }
-  return NextResponse.json(await performAction(payload.did, payload.act as ActionName));
+  return NextResponse.json(await performAction(payload.did, payload.act as ActionName, "push"));
 }
