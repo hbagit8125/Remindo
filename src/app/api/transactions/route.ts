@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { db, transactions } from "@/db";
+import { inArray } from "drizzle-orm";
+import { db, dues, splits, transactions } from "@/db";
 import { transactionInputSchema } from "@/lib/money";
 import { currentMonth, listTransactions } from "@/lib/finance";
 import { createTransactions } from "@/lib/create";
@@ -13,7 +14,29 @@ export async function GET(req: Request) {
     listTransactions(month),
     db().selectDistinct({ category: transactions.category, type: transactions.type }).from(transactions),
   ]);
-  return NextResponse.json({ month, transactions: rows, usedCategories: cats });
+  // Split bills: show "your share · ₹x back · ₹y due" under the expense.
+  const ids = rows.map((r) => r.id);
+  const sp = ids.length ? await db().select().from(splits).where(inArray(splits.transactionId, ids)) : [];
+  const ds = sp.length ? await db().select().from(dues).where(inArray(dues.splitId, sp.map((s) => s.id))) : [];
+  const withSplit = rows.map((r) => {
+    const s = sp.find((x) => x.transactionId === r.id);
+    if (!s) return r;
+    const mine = ds.filter((d) => d.splitId === s.id);
+    const theyOwe = mine.filter((d) => d.direction === "they_owe");
+    return {
+      ...r,
+      split: {
+        id: s.id,
+        paidBy: s.paidBy,
+        myPaise: s.myPaise,
+        people: s.shares.length,
+        backPaise: theyOwe.filter((d) => d.settledAt).reduce((a, d) => a + d.amountPaise, 0),
+        duePaise: theyOwe.filter((d) => !d.settledAt).reduce((a, d) => a + d.amountPaise, 0),
+        iOwePaise: mine.filter((d) => d.direction === "i_owe" && !d.settledAt).reduce((a, d) => a + d.amountPaise, 0),
+      },
+    };
+  });
+  return NextResponse.json({ month, transactions: withSplit, usedCategories: cats });
 }
 
 /** Add one or more: { items: TransactionInput[] } */

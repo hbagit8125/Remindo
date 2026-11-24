@@ -141,7 +141,14 @@ export async function listDues() {
   };
 }
 
-/** Mark settled and log the money (received → income "Refund", paid → expense). */
+/**
+ * Mark settled and log the money.
+ * - They paid you back → income "Refund" (added to your account).
+ * - You paid back a plain due → expense.
+ * - You paid back your share of a split → no new expense (your share was already counted);
+ *   the split's expense is moved to the account you paid from.
+ * The due's follow-up reminder is closed (and taken off today's lists).
+ */
 export async function settleDue(id: string, opts: { log: boolean; accountId?: string | null }, now = new Date()) {
   const [d] = await db().update(dues).set({ settledAt: new Date() }).where(and(eq(dues.id, id), isNull(dues.settledAt))).returning();
   if (!d) return null;
@@ -150,17 +157,50 @@ export async function settleDue(id: string, opts: { log: boolean; accountId?: st
     const { reminders } = await import("@/db");
     const [r] = await db().select().from(reminders).where(eq(reminders.id, d.reminderId));
     if (r && r.status === "active") await completeOccurrence(r.id, r.dueAt);
+    if (r) await db().update(reminders).set({ status: "archived", updatedAt: new Date() }).where(eq(reminders.id, r.id));
   }
-  if (opts.log) {
+  const splitOwe = d.splitId && d.direction === "i_owe";
+  if (splitOwe) {
+    const { splits, transactions } = await import("@/db");
+    const [sp] = await db().select().from(splits).where(eq(splits.id, d.splitId!));
+    if (sp?.transactionId && (opts.accountId || sp.accountId)) {
+      await db().update(transactions).set({ accountId: opts.accountId || sp.accountId }).where(eq(transactions.id, sp.transactionId));
+    }
+  } else if (opts.log) {
+    let accountId = opts.accountId || null;
+    if (!accountId && d.splitId) {
+      const { splits } = await import("@/db");
+      accountId = (await db().select().from(splits).where(eq(splits.id, d.splitId)))[0]?.accountId || null;
+    }
     const [tx] = await createTransactions([
       d.direction === "they_owe"
-        ? { type: "income", amount: d.amountPaise / 100, category: "Refund", note: `${d.person} paid back${d.note ? ` · ${d.note}` : ""}`, date: fmtLocal(now, "yyyy-MM-dd"), accountId: opts.accountId || null }
-        : { type: "expense", amount: d.amountPaise / 100, category: "Other", note: `Paid back ${d.person}${d.note ? ` · ${d.note}` : ""}`, date: fmtLocal(now, "yyyy-MM-dd"), accountId: opts.accountId || null },
+        ? { type: "income", amount: d.amountPaise / 100, category: "Refund", note: `${d.person} paid back${d.note ? ` · ${d.note}` : ""}`, date: fmtLocal(now, "yyyy-MM-dd"), accountId }
+        : { type: "expense", amount: d.amountPaise / 100, category: "Other", note: `Paid back ${d.person}${d.note ? ` · ${d.note}` : ""}`, date: fmtLocal(now, "yyyy-MM-dd"), accountId },
     ]);
-    // Link the refund to the due so it can be traced (and undone).
+    // Link the payback to the due so it can be traced (and undone).
     if (tx) await db().update(dues).set({ transactionId: tx.id }).where(eq(dues.id, d.id));
   }
+  if (d.splitId) await import("./splits").then((m) => m.syncSplitReminder(d.splitId!));
   return d;
+}
+
+/** Undo "paid back": the due is open again and its payback entry is removed. */
+export async function unsettleDue(id: string) {
+  const [d] = await db().select().from(dues).where(eq(dues.id, id));
+  if (!d || !d.settledAt) return null;
+  const { transactions } = await import("@/db");
+  if (d.transactionId) await db().delete(transactions).where(eq(transactions.id, d.transactionId));
+  const [row] = await db().update(dues).set({ settledAt: null, transactionId: null }).where(eq(dues.id, id)).returning();
+  if (d.splitId) await import("./splits").then((m) => m.syncSplitReminder(d.splitId!));
+  return row;
+}
+
+/** Settle up with someone: every open due with them, at once. */
+export async function settlePerson(person: string, opts: { accountId?: string | null } = {}, now = new Date()) {
+  const open = await db().select().from(dues).where(and(isNull(dues.settledAt)));
+  const mine = open.filter((d) => d.person.toLowerCase() === person.toLowerCase());
+  for (const d of mine) await settleDue(d.id, { log: true, accountId: opts.accountId }, now);
+  return mine.length;
 }
 
 // ------------------------------------------------------------- goals

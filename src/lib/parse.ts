@@ -5,6 +5,7 @@ import { taskInputSchema, type TaskInput } from "./tasks";
 import { dueInputSchema, type DueInput } from "./moneyplus";
 import { listAddSchema, type ListAdd } from "./life";
 import { placeReminderInputSchema, type PlaceReminderInput } from "./places";
+import { splitInputSchema, type SplitInput } from "./splits";
 import { commandSchema, questionSchema, type Command, type Question } from "./assistant";
 import {
   CATEGORY_KEYWORDS,
@@ -20,6 +21,16 @@ const resultSchema = z.object({
   transactions: z.array(transactionInputSchema).max(30).default([]),
   tasks: z.array(taskInputSchema).max(30).default([]),
   dues: z.array(dueInputSchema).max(10).default([]),
+  splits: z
+    .array(
+      z.preprocess(
+        // The AI sometimes leaves out the date: it's today then.
+        (x) => (x && typeof x === "object" && !(x as { date?: unknown }).date ? { ...x, date: fmtLocal(new Date(), "yyyy-MM-dd") } : x),
+        splitInputSchema.omit({ accountId: true, transactionId: true }),
+      ),
+    )
+    .max(5)
+    .default([]),
   listItems: z.array(listAddSchema).max(5).default([]),
   placeReminders: z.array(placeReminderInputSchema).max(5).default([]),
   question: questionSchema.nullish(),
@@ -31,6 +42,7 @@ export type ParseResult = {
   transactions: TransactionInput[];
   tasks: TaskInput[];
   dues?: DueInput[];
+  splits?: SplitInput[];
   listItems?: ListAdd[];
   placeReminders?: PlaceReminderInput[];
   question?: Question | null;
@@ -38,7 +50,7 @@ export type ParseResult = {
 };
 
 const hasContent = (d: z.infer<typeof resultSchema>) =>
-  Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.listItems.length || d.placeReminders.length || d.question || d.commands.length);
+  Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.splits.length || d.listItems.length || d.placeReminders.length || d.question || d.commands.length);
 
 /** Your own categories, loaded once per request before the AI is called. */
 let categoryExtra = "";
@@ -48,7 +60,7 @@ function systemPrompt(now = new Date()) {
   return `You are a personal assistant. You turn a short note (typed or spoken, Indian English or Malayalam, amounts in rupees) into REMINDERS, TASKS and/or money TRANSACTIONS.
 Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.${categoryExtra}
 
-Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "listItems":[...], "placeReminders":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
+Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "splits":[...], "listItems":[...], "placeReminders":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
 KEEP THE USER'S WORDS: titles, notes, names and list items must keep every meaningful word the user wrote, including names, codes and tags in capitals (e.g. "TEST", "KSEB", "Arun"). Only drop filler like "remind me to", "please", "I need to".
 
 QUESTIONS: if they are ASKING about their own data, return only "question" (everything else empty):
@@ -104,7 +116,14 @@ Each task:
 
 DUES = money someone owes you or you owe someone: "Arun owes me 600", "I owe Priya 200".
 Each due: {"person": the name exactly as written, every word kept (e.g. "TEST Riya" stays "TEST Riya"), "direction": "they_owe" | "i_owe", "amount": rupees, "note": what for or null, "remindOn": "YYYY-MM-DD" if they say when to collect/pay, else null}
-"Paid 1200 for dinner, Arun owes 600" = one expense of 1200 AND one due (Arun, they_owe, 600, "dinner").
+A due is ONLY for a standalone IOU with no shared bill ("Arun owes me 600", "lent Sam 500"). A shared bill is a SPLIT (below), never a transaction plus dues.
+
+SPLITS = a bill shared between people: "Paid 1200 for dinner with Arun and Riya, split equally", "Paid 1200 for dinner, Arun owes 600", "Sneha paid 900 for the movie, split with me and Manu", "Cab 600 split 60/40 with Arun".
+Each split: {"title": what for ("Dinner"), "amount": the WHOLE bill in rupees, "category": expense category, "date": "YYYY-MM-DD", "paidBy": "me" or the payer's name,
+ "method": "equal" | "amount" | "percent" | "shares",
+ "people": everyone sharing it INCLUDING "me" (if the user is part of it) and the payer: [{"person": "me" or a name exactly as written, "value": number}]}
+For "equal" use value 0. For "amount" values are rupees and must add up to the bill. For "percent" they add up to 100. For "shares" they are counts (e.g. 2 and 1).
+"Paid 1200 for dinner, Arun owes 600" → split, paidBy "me", method "amount", people [me 600, Arun 600]. Do NOT add a separate transaction or due for a split: the split records the expense itself.
 
 LIST ITEMS = things to add to a named list (shopping, packing, ideas, movies…): "add eggs and bread to shopping list", "put sunscreen on the packing list".
 Each: {"list": list name without the word "list" (e.g. "shopping"), "items": ["Eggs", "Bread"]}. These are NOT tasks.
@@ -416,12 +435,15 @@ export function parseLocally(text: string, now = new Date()): ParseResult {
   if (asked) return { reminders: [], transactions: [], tasks: [], dues: [], question: asked.question || null, commands: asked.commands || [] };
   const sms = parseBankSms(text, now);
   if (sms) return { reminders: [], transactions: [sms], tasks: [], dues: [] };
+  // "Paid 1200 for dinner, Arun owes 600" is one split, not an expense and a due.
+  const whole = parseSplitLocally(text, now);
+  if (whole) return { reminders: [], transactions: [], tasks: [], dues: [], splits: [whole], listItems: [], placeReminders: [] };
   // "Call mom at 7, and spent 50 on tea" → handle each part separately.
   const parts = text
     .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b)|,\s*(?=(?:\w+\s+owes\b|i\s+owe\b)))/i)
     .map((p) => p.replace(/^(?:also|then|plus)\s+/i, "").trim())
     .filter((p) => p.length > 2);
-  const result: ParseResult = { reminders: [], transactions: [], tasks: [], dues: [], listItems: [], placeReminders: [] };
+  const result: ParseResult = { reminders: [], transactions: [], tasks: [], dues: [], splits: [], listItems: [], placeReminders: [] };
   for (const part of parts.length ? parts : [text]) {
     const pl =
       part.match(/^\s*(?:remind me (?:to\s+)?)?(.+?)\s+(?:when(?:ever)?|every time)\s+i\s+(reach|get to|arrive at|come to|leave)\s+(?:the\s+|my\s+)?([\w ]{2,30}?)\s*[.!]?$/i) ||
@@ -437,6 +459,11 @@ export function parseLocally(text: string, now = new Date()): ParseResult {
     if (li) {
       const items = li[1].split(/\s*(?:,|\band\b|&)\s*/i).map((x) => x.trim()).filter(Boolean).map((x) => x[0].toUpperCase() + x.slice(1));
       result.listItems!.push({ list: li[2].trim(), items });
+      continue;
+    }
+    const sp = parseSplitLocally(part, now);
+    if (sp) {
+      result.splits!.push(sp);
       continue;
     }
     const owe = part.match(/^\s*(?:(\w[\w ]{0,30}?)\s+owes(?:\s+me)?|i\s+owe\s+(\w[\w ]{0,30}?))\s+(?:rs\.?|₹)?\s*([\d,]+)/i);
@@ -460,6 +487,62 @@ export function parseLocally(text: string, now = new Date()): ParseResult {
     else result.reminders.push(...parseReminderLocally(part, now));
   }
   return result;
+}
+
+const names = (x: string) =>
+  x
+    .split(/\s*(?:,|\band\b|&)\s*/i)
+    .map((n) => n.trim())
+    .filter(Boolean)
+    .map((n) => (/^(me|myself|i)$/i.test(n) ? "me" : n.replace(/\b\w/g, (c) => c.toUpperCase())));
+
+/**
+ * Offline split bills:
+ *  "Paid 1200 for dinner with Arun and Riya, split equally" / "dinner 1200 split with Arun and Riya"
+ *  "Sneha paid 900 for movie, split with me and Manu"
+ *  "Paid 1200 for dinner, Arun owes 600"
+ */
+export function parseSplitLocally(text: string, now = new Date()): SplitInput | null {
+  if (!/\bsplit\b|\bowes(?:\s+me)?\s+(?:rs\.?|₹)?\s*\d/i.test(text)) return null;
+  const date = fmtLocal(now, "yyyy-MM-dd");
+  const amt = (x: string) => Number(x.replace(/,/g, ""));
+  const cap = (x: string) => x.trim().replace(/^\w/, (c) => c.toUpperCase());
+  const category = (title: string) => {
+    for (const [re, cat] of CATEGORY_KEYWORDS) if (re.test(title)) return cat;
+    return "Other";
+  };
+  // "Paid 1200 for dinner, Arun owes 600"
+  let m = text.match(/^\s*(?:i\s+)?(?:paid|spent)\s+(?:rs\.?|₹)?\s*([\d,]+)\s+(?:for|on)\s+(?:the\s+)?(.+?),?\s+(\w[\w ]{0,30}?)\s+owes(?:\s+me)?\s+(?:rs\.?|₹)?\s*([\d,]+)\s*$/i);
+  if (m) {
+    const total = amt(m[1]);
+    const theirs = amt(m[4]);
+    if (theirs >= total) return null;
+    const title = cap(m[2]);
+    return { title, amount: total, category: category(title), date, paidBy: "me", method: "amount", people: [{ person: "me", value: total - theirs }, { person: names(m[3])[0], value: theirs }] };
+  }
+  // "<Name|I> paid 1200 for dinner (with A and B), split (equally) (with A and B)"
+  m = text.match(
+    /^\s*(?:(i|\w[\w ]{0,30}?)\s+)?(?:paid|spent)\s+(?:rs\.?|₹)?\s*([\d,]+)\s+(?:for|on)\s+(?:the\s+)?(.+?)(?:\s+with\s+(.+?))?,?\s+split(?:\s+it)?(?:\s+equally)?(?:\s+(?:with|between|among)\s+(.+?))?(?:\s+equally)?\s*$/i,
+  );
+  // "dinner 1200 split with Arun and Riya" / "split the cab 600 with Arun"
+  const m2 = m
+    ? null
+    : text.match(/^\s*(.+?)\s+(?:rs\.?|₹)?\s*([\d,]+)\s+split(?:\s+equally)?\s+(?:with|between|among)\s+(.+?)(?:\s+equally)?\s*$/i) ||
+      (() => {
+        const x = text.match(/^\s*split\s+(?:the\s+|my\s+)?(.+?)\s+(?:rs\.?|₹)?\s*([\d,]+)(?:\s+equally)?\s+(?:with|between|among)\s+(.+?)(?:\s+equally)?\s*$/i);
+        return x ? ([x[0], x[1], x[2], x[3]] as unknown as RegExpMatchArray) : null;
+      })();
+  if (!m && !m2) return null;
+  const payer = m && m[1] && !/^i$/i.test(m[1]) ? names(m[1])[0] : "me";
+  const total = amt(m ? m[2] : m2![2]);
+  const title = cap(m ? m[3] : m2![1]);
+  const withList = names((m ? m[5] || m[4] : m2![3]) || "");
+  if (!withList.length || !total) return null;
+  const everyone = [...new Set(["me", payer, ...withList].map((n) => n))];
+  // A friend paid and listed "me" explicitly, or I paid: I'm in it either way.
+  const people = everyone.filter((n, i) => everyone.findIndex((x) => x.toLowerCase() === n.toLowerCase()) === i).map((person) => ({ person, value: 0 }));
+  if (people.length < 2) return null;
+  return { title, amount: total, category: category(title), date, paidBy: payer, method: "equal", people };
 }
 
 /** "todo: buy milk", "add task finish report by friday", "buy milk" (no time) → task. */

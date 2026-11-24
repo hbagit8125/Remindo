@@ -207,3 +207,9 @@ export function useCategories() {
     income: r.data?.income || INCOME_CATEGORIES,
   };
 }
+
+/** Open a split bill's detail sheet from anywhere (Entries, Splits tab, search…). */
+export const SPLIT_EVENT = "remindo:open-split";
+export function openSplit(id: string) {
+  window.dispatchEvent(new CustomEvent(SPLIT_EVENT, { detail: id }));
+}

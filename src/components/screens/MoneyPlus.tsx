@@ -471,7 +471,7 @@ export function DuesScreen() {
   );
 }
 
-function DueForm({ onClose }: { onClose: () => void }) {
+export function DueForm({ onClose }: { onClose: () => void }) {
   const { busy, run } = useSubmit();
   const [person, setPerson] = useState("");
   const [direction, setDirection] = useState<"they_owe" | "i_owe">("they_owe");
