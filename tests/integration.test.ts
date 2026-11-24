@@ -723,6 +723,15 @@ async function main() {
   assert.match(String(lastEdit.body.text), /Done from email/);
   assert.equal((await performAction(syncDl.id, "done", "telegram")).title, "Already done");
 
+  // Widget key: created on demand, checked in constant time, reset invalidates the old one.
+  const WK = await import("../src/lib/widget");
+  assert.equal(await WK.checkWidgetKey("anything"), false, "no key yet → nothing works");
+  const wk1 = await WK.getWidgetKey();
+  assert.equal(await WK.checkWidgetKey(wk1), true);
+  assert.equal(await WK.checkWidgetKey(null), false);
+  const wk2 = await WK.resetWidgetKey();
+  assert.equal(await WK.checkWidgetKey(wk1), false, "old link stops working after reset");
+  assert.equal(await WK.checkWidgetKey(wk2), true);
   // ---------------------------------------------------------------- Round 5
   // Expense → monthly bill reminder (same day next month, month-end safe), no duplicates.
   const [billTx] = await ct2([{ type: "expense", amount: 649, category: "Subscriptions", note: "Netflix", date: "2026-01-31" }]);

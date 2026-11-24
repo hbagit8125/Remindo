@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">Remindo Widget</string>
+    <string name="widget_name">Remindo · Today</string>
+    <string name="widget_desc">Today\'s reminders and focus tasks</string>
+    <string name="tagline">Shows today\'s reminders from Remindo on your home screen.</string>
+    <string name="site_label">Your Remindo address</string>
+    <string name="open_remindo">Open Remindo</string>
+    <string name="test">Check connection</string>
+    <string name="refresh">Refresh</string>
+    <string name="add">Add</string>
+</resources>

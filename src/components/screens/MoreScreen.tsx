@@ -16,6 +16,7 @@ import {
   Smartphone,
   Sun,
   ShieldAlert,
+  RefreshCw,
   Tags,
 } from "lucide-react";
 import { api, useData } from "@/components/app/client";
@@ -345,6 +346,8 @@ export function MoreScreen() {
         </Row>
       </Group>
 
+      <WidgetGroup />
+
       <Group title="App">
         <Row icon={theme.dark ? <Moon className="h-[18px] w-[18px]" /> : <Sun className="h-[18px] w-[18px]" />} title="Dark mode">
           <Toggle label="Dark mode" on={theme.dark} onChange={() => theme.toggle()} />
@@ -393,5 +396,50 @@ export function MoreScreen() {
         </div>
       )}
     </div>
+  );
+}
+
+const WIDGET_APK = "https://github.com/hbagit8125/Remindo/releases/download/widget-latest/remindo-widget.apk";
+
+/** Android home-screen widget: download the small app, then connect it with one tap. */
+function WidgetGroup() {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const link = async (reset = false) => {
+    const { key } = await api<{ key: string }>("/api/widget/key", { method: reset ? "POST" : "GET" });
+    return `remindo://setup?u=${encodeURIComponent(window.location.origin)}&k=${encodeURIComponent(key)}`;
+  };
+  return (
+    <Group title="Home-screen widget (Android)" note="The widget only reads today's reminders and focus tasks. Reset the link if you change phones.">
+      <a href={WIDGET_APK} className="block hover:bg-raised">
+        <Row icon={<Download className="h-[18px] w-[18px]" />} title="1. Get the widget app" desc="Download and install the small Remindo Widget app (APK)" />
+      </a>
+      <button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            window.location.href = await link();
+          } catch (e) {
+            toast({ message: (e as Error).message, tone: "error" });
+          } finally {
+            setBusy(false);
+          }
+        }}
+        className="block w-full text-left hover:bg-raised"
+      >
+        <Row icon={<Smartphone className="h-[18px] w-[18px]" />} title="2. Connect it" desc="Opens the widget app with your link filled in. Then add the widget to your home screen." />
+      </button>
+      <button
+        onClick={async () => {
+          if (!window.confirm("Reset the widget link? The widget stops updating until you connect it again.")) return;
+          await link(true);
+          toast({ message: "Widget link reset. Tap Connect it again on your phone." });
+        }}
+        className="block w-full text-left hover:bg-raised"
+      >
+        <Row icon={<RefreshCw className="h-[18px] w-[18px]" />} title="Reset widget link" />
+      </button>
+    </Group>
   );
 }

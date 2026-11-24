@@ -1,0 +1,9 @@
+<resources>
+    <color name="bg">#F7F7FB</color>
+    <color name="card">#FFFFFF</color>
+    <color name="widget_bg">#F2FFFFFF</color>
+    <color name="fg">#111827</color>
+    <color name="muted">#6B7280</color>
+    <color name="accent">#6366F1</color>
+    <color name="late">#E11D48</color>
+</resources>

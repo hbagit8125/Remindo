@@ -3,7 +3,7 @@ import { isValidSession, SESSION_COOKIE } from "@/lib/auth";
 
 // Endpoints that authenticate themselves (QStash signature, cron secret or signed email link).
 // Telegram webhook checks its secret header; push actions carry a signed token.
-const PUBLIC = ["/login", "/api/auth/login", "/api/deliver", "/api/action", "/api/cron", "/api/sweep", "/api/telegram/webhook", "/api/push/action"];
+const PUBLIC = ["/login", "/api/auth/login", "/api/deliver", "/api/action", "/api/cron", "/api/sweep", "/api/telegram/webhook", "/api/push/action", "/api/widget"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
