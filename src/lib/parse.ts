@@ -4,6 +4,7 @@ import { reminderInputSchema, type ReminderInput } from "./reminder-input";
 import { taskInputSchema, type TaskInput } from "./tasks";
 import { dueInputSchema, type DueInput } from "./moneyplus";
 import { listAddSchema, type ListAdd } from "./life";
+import { placeReminderInputSchema, type PlaceReminderInput } from "./places";
 import { commandSchema, questionSchema, type Command, type Question } from "./assistant";
 import {
   CATEGORY_KEYWORDS,
@@ -20,6 +21,7 @@ const resultSchema = z.object({
   tasks: z.array(taskInputSchema).max(30).default([]),
   dues: z.array(dueInputSchema).max(10).default([]),
   listItems: z.array(listAddSchema).max(5).default([]),
+  placeReminders: z.array(placeReminderInputSchema).max(5).default([]),
   question: questionSchema.nullish(),
   commands: z.array(commandSchema).max(5).default([]),
 });
@@ -30,12 +32,13 @@ export type ParseResult = {
   tasks: TaskInput[];
   dues?: DueInput[];
   listItems?: ListAdd[];
+  placeReminders?: PlaceReminderInput[];
   question?: Question | null;
   commands?: Command[];
 };
 
 const hasContent = (d: z.infer<typeof resultSchema>) =>
-  Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.listItems.length || d.question || d.commands.length);
+  Boolean(d.reminders.length || d.transactions.length || d.tasks.length || d.dues.length || d.listItems.length || d.placeReminders.length || d.question || d.commands.length);
 
 /** Your own categories, loaded once per request before the AI is called. */
 let categoryExtra = "";
@@ -45,7 +48,7 @@ function systemPrompt(now = new Date()) {
   return `You are a personal assistant. You turn a short note (typed or spoken, Indian English or Malayalam, amounts in rupees) into REMINDERS, TASKS and/or money TRANSACTIONS.
 Right now it is ${ctx.weekday}, ${ctx.date} ${ctx.time} in timezone ${ctx.tz}. Resolve relative dates ("tomorrow", "yesterday", "next Tuesday", "on the 5th") against this.${categoryExtra}
 
-Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "listItems":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
+Return ONLY JSON: {"reminders":[...], "tasks":[...], "transactions":[...], "dues":[...], "listItems":[...], "placeReminders":[...], "question": null | {...}, "commands":[...]}. Any list may be empty.
 KEEP THE USER'S WORDS: titles, notes, names and list items must keep every meaningful word the user wrote, including names, codes and tags in capitals (e.g. "TEST", "KSEB", "Arun"). Only drop filler like "remind me to", "please", "I need to".
 
 QUESTIONS: if they are ASKING about their own data, return only "question" (everything else empty):
@@ -105,6 +108,9 @@ Each due: {"person": the name exactly as written, every word kept (e.g. "TEST Ri
 
 LIST ITEMS = things to add to a named list (shopping, packing, ideas, movies…): "add eggs and bread to shopping list", "put sunscreen on the packing list".
 Each: {"list": list name without the word "list" (e.g. "shopping"), "items": ["Eggs", "Bread"]}. These are NOT tasks.
+
+PLACE REMINDERS = reminders tied to arriving at / leaving a place, with no clock time: "remind me to submit the form when I reach office", "when I leave home remind me to take the charger", "every time I get to the gym, log water".
+Each: {"text": what to do, in the user's words ("Submit the form"), "place": the place name ("Office", "Home", "Gym"), "on": "arrive" | "leave", "repeat": true only for "every time"/"whenever"}. These are NOT timed reminders.
 
 BANK / UPI SMS: if the text looks like a bank SMS ("debited", "credited", "A/c XX1234", "UPI Ref", "Avl Bal"), make ONE transaction: debited/spent/sent = expense, credited/received = income; amount from "Rs"/"INR"; merchant from the payee/VPA/"at …" name in plain words (e.g. "swiggy@icici" → "Swiggy"); method "upi" for UPI, "card" for card; date from the SMS if present. Ignore the balance amount.
 
@@ -404,7 +410,9 @@ export function parseAssistantLocally(text: string, now = new Date()): { questio
 }
 
 export function parseLocally(text: string, now = new Date()): ParseResult {
-  const asked = parseAssistantLocally(text, now);
+  // "When I reach office, remind me…" is a place reminder, not a question.
+  const placeLike = /\b(?:when(?:ever)?|every time)\s+i\s+(?:reach|get to|arrive at|come to|leave)\b/i.test(text);
+  const asked = placeLike ? null : parseAssistantLocally(text, now);
   if (asked) return { reminders: [], transactions: [], tasks: [], dues: [], question: asked.question || null, commands: asked.commands || [] };
   const sms = parseBankSms(text, now);
   if (sms) return { reminders: [], transactions: [sms], tasks: [], dues: [] };
@@ -413,8 +421,18 @@ export function parseLocally(text: string, now = new Date()): ParseResult {
     .split(/\s*(?:,\s*and\s+|;\s*|\n+|\.\s+(?=\S)|,\s*(?=(?:also|then|plus)\b)|\s+and\s+(?=(?:spent|paid|bought|got|received|remind|call|pay)\b)|,\s*(?=(?:\w+\s+owes\b|i\s+owe\b)))/i)
     .map((p) => p.replace(/^(?:also|then|plus)\s+/i, "").trim())
     .filter((p) => p.length > 2);
-  const result: ParseResult = { reminders: [], transactions: [], tasks: [], dues: [], listItems: [] };
+  const result: ParseResult = { reminders: [], transactions: [], tasks: [], dues: [], listItems: [], placeReminders: [] };
   for (const part of parts.length ? parts : [text]) {
+    const pl =
+      part.match(/^\s*(?:remind me (?:to\s+)?)?(.+?)\s+(?:when(?:ever)?|every time)\s+i\s+(reach|get to|arrive at|come to|leave)\s+(?:the\s+|my\s+)?([\w ]{2,30}?)\s*[.!]?$/i) ||
+      null;
+    const plFirst = pl ? null : part.match(/^\s*(?:when(?:ever)?|every time)\s+i\s+(reach|get to|arrive at|come to|leave)\s+(?:the\s+|my\s+)?([\w ]{2,30}?),?\s+(?:remind me (?:to\s+)?)?(.+?)\s*[.!]?$/i);
+    if (pl || plFirst) {
+      const [text, verb, place] = pl ? [pl[1], pl[2], pl[3]] : [plFirst![3], plFirst![1], plFirst![2]];
+      const cap = (x: string) => x.trim().replace(/^\w/, (c) => c.toUpperCase());
+      result.placeReminders!.push({ text: cap(text), place: cap(place), on: /leave/i.test(verb) ? "leave" : "arrive", repeat: /whenever|every time/i.test(part) });
+      continue;
+    }
     const li = part.match(/^\s*(?:add|put)\s+(.+?)\s+(?:to|on|in)\s+(?:my\s+|the\s+)?([\w ]{1,30}?)\s+list\s*$/i);
     if (li) {
       const items = li[1].split(/\s*(?:,|\band\b|&)\s*/i).map((x) => x.trim()).filter(Boolean).map((x) => x[0].toUpperCase() + x.slice(1));

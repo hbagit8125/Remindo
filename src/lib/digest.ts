@@ -1,7 +1,7 @@
 import { agenda, type AgendaItem } from "./scheduler";
 import { digestSection, esc, layout, sendEmail, type DigestItem } from "./email";
 import { fmtLocal, localDayBounds } from "./time";
-import { digestSpending, weeklySpending, listTransactions } from "./finance";
+import { digestSpending, moneyTips, weeklySpending, listTransactions } from "./finance";
 import { and, eq, gte } from "drizzle-orm";
 import { db, deliveries, reminders, completions } from "@/db";
 import { formatINR } from "./money";
@@ -61,6 +61,9 @@ export async function sendDailyDigest(now = new Date()) {
       ...focusTasks.slice(0, 6).map((t) => `☐ ${h(t.title)}`),
       ...todays.slice(0, 8).map((i) => `• ${when(i, false)} · ${h(i.title)}`),
       ...(important.length ? ["", "<b>Coming up</b>", ...important.slice(0, 3).map((i) => `❗ ${when(i, true)} · ${h(i.title)}`)] : []),
+      ...(await moneyTips(now)
+        .then((t) => (t.length ? ["", "<b>Money</b>", ...t.map((x) => `💰 ${h(x)}`)] : []))
+        .catch(() => [])),
     ].join("\n"),
   ).catch(() => null);
   return { today: count, overdue: overdue.length, important: important.length, held: held.length };

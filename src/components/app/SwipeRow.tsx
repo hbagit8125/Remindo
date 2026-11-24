@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
 
 type Action = { label: string; icon: React.ReactNode; className: string; onTrigger: () => void };
@@ -83,5 +83,33 @@ export function SwipeRow({
         {children}
       </div>
     </div>
+  );
+}
+
+/** One-time tip on phones so people discover the swipe gestures. */
+export function SwipeHint({ text }: { text: string }) {
+  const [show, setShow] = useState(false);
+  // Decide after the page loads (the server can't know it's a phone).
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read browser state once on mount
+      setShow(window.matchMedia("(pointer: coarse)").matches && !localStorage.getItem("swipeHintSeen"));
+    } catch {}
+  }, []);
+  if (!show) return null;
+  return (
+    <button
+      onClick={() => {
+        try {
+          localStorage.setItem("swipeHintSeen", "1");
+        } catch {}
+        setShow(false);
+      }}
+      className="mb-3 flex w-full items-center gap-2 rounded-2xl bg-indigo-500/10 px-4 py-2.5 text-left text-sm text-indigo-700 dark:text-indigo-200"
+    >
+      <span aria-hidden>👆</span>
+      <span className="flex-1">{text}</span>
+      <span className="text-xs opacity-70">Got it</span>
+    </button>
   );
 }
