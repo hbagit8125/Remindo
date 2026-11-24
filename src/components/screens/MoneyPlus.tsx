@@ -1,5 +1,6 @@
 "use client";
 
+import { dueShareText, ShareButton } from "@/components/app/Share";
 import { useState } from "react";
 import { clsx } from "clsx";
 import { ArrowLeftRight, Check, Handshake, Loader2, Pencil, PiggyBank, Plus, Trash2, Wallet, X } from "lucide-react";
@@ -440,6 +441,12 @@ export function DuesScreen() {
                   >
                     <Check className="h-3.5 w-3.5" /> Settled
                   </button>
+                  <ShareButton
+                    text={dueShareText(d)}
+                    title={d.direction === "they_owe" ? `Remind ${d.person}` : `Message ${d.person}`}
+                    label=""
+                    className="grid h-8 w-8 place-items-center rounded-lg text-subtle hover:text-indigo-500"
+                  />
                   <button onClick={() => remove(d)} aria-label="Remove" className="grid h-8 w-8 place-items-center rounded-lg text-subtle hover:text-rose-500">
                     <Trash2 className="h-4 w-4" />
                   </button>

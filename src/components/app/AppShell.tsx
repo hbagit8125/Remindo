@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { clsx } from "clsx";
 import { AlarmClock, CalendarCheck, Home, LayoutGrid, LogOut, Moon, Plus, Search, Sun, Wallet } from "lucide-react";
 import { OfflineBanner } from "./OfflineBanner";
+import { LocationWatcher } from "./LocationWatcher";
 import { refreshAll } from "./client";
 import { SearchOverlay } from "./SearchOverlay";
 import type { SheetMode } from "./AddSheet";
@@ -181,6 +182,7 @@ function Frame({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto w-full max-w-3xl px-4 pb-32 pt-3 md:px-8 md:pb-12 md:pt-8">
           <OfflineBanner />
+          <LocationWatcher />
           {children}
         </main>
       </div>

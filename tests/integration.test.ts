@@ -723,6 +723,51 @@ async function main() {
   assert.match(String(lastEdit.body.text), /Done from email/);
   assert.equal((await performAction(syncDl.id, "done", "telegram")).title, "Already done");
 
+  // ---------------------------------------------------------------- Round 5
+  // Expense → monthly bill reminder (same day next month, month-end safe), no duplicates.
+  const [billTx] = await ct2([{ type: "expense", amount: 649, category: "Subscriptions", note: "Netflix", date: "2026-01-31" }]);
+  const RM = await import("../src/app/api/transactions/[id]/remind/route");
+  const rm1 = await (await RM.POST(new Request("https://x", { method: "POST" }), { params: Promise.resolve({ id: billTx.id }) })).json();
+  assert.equal(rm1.existed, false);
+  assert.equal(rm1.reminder.title, "Netflix");
+  assert.equal(rm1.reminder.amountPaise, 64900);
+  assert.match(rm1.reminder.rrule, /FREQ=MONTHLY.*BYMONTHDAY=28,29,30,31;BYSETPOS=-1/);
+  const rm2 = await (await RM.POST(new Request("https://x", { method: "POST" }), { params: Promise.resolve({ id: billTx.id }) })).json();
+  assert.equal(rm2.existed, true, "second tap doesn't duplicate");
+  const { describeRrule } = await import("../src/lib/recurrence");
+  assert.equal(describeRrule(rm1.reminder.rrule), "every month on the 31st (or the last day)");
+
+  // Morning digest money tips: budget left per day + weekend average.
+  const { moneyTips } = await import("../src/lib/finance");
+  const fri = new Date("2026-03-13T02:00:00Z"); // Friday 7:30am IST
+  await ct2([
+    { type: "expense", amount: 1000, category: "Food", note: "QA wk1", date: "2026-02-28" },
+    { type: "expense", amount: 500, category: "Food", note: "QA wk1b", date: "2026-03-01" },
+    { type: "expense", amount: 900, category: "Food", note: "QA wk2", date: "2026-03-07" },
+    { type: "expense", amount: 300, category: "Food", note: "QA mid", date: "2026-03-10" },
+  ]);
+  const { budgets: bT2 } = await import("../src/db");
+  await db().delete(bT2);
+  await db().insert(bT2).values({ category: "__total__", amountPaise: 2000000 });
+  const tips = await moneyTips(fri);
+  assert.ok(tips.some((t) => /budget left · about ₹[\d,]+\/day for the next 19 days/.test(t)), "budget left per day: " + tips.join(" | "));
+  assert.ok(tips.some((t) => /usually spend about ₹[\d,]+ on a weekend \(last \d+ weekends\)/.test(t)), "weekend average: " + tips.join(" | "));
+  await db().delete(bT2);
+
+  // Place reminders: parse, save, fire once (Telegram copy), one-time ones switch off.
+  const placeParse = parseLocally("Remind me to submit the form when I reach office");
+  assert.deepEqual(placeParse.placeReminders, [{ text: "Submit the form", place: "Office", on: "arrive", repeat: false }]);
+  const PL = await import("../src/lib/places");
+  await PL.savePlace({ name: "office", lat: 8.5241, lng: 76.9366, radius: 150 });
+  const [qaPr] = await PL.addPlaceReminders(placeParse.placeReminders!);
+  assert.equal(PL.placeFor(qaPr, await PL.listPlaces())?.name, "Office");
+  const tgBeforePlace = tgCalls.length;
+  const fired = await PL.firePlaceReminder(qaPr.id);
+  assert.equal(fired!.active, false, "one-time reminder switched off");
+  assert.ok(tgCalls.slice(tgBeforePlace).some((c) => String(c.body.text).includes("Submit the form")), "telegram copy sent");
+  assert.equal(await PL.firePlaceReminder(qaPr.id), null, "doesn't fire again");
+  assert.ok(Math.abs(PL.distanceM({ lat: 8.5241, lng: 76.9366 }, { lat: 8.5251, lng: 76.9366 }) - 111) < 2, "distance maths");
+
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
 

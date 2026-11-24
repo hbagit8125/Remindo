@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, ListChecks, Loader2, Mic, MicOff, Sparkles, Star, Trash2, Wallet, X } from "lucide-react";
+import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, ListChecks, Loader2, MapPin, Mic, MicOff, Repeat, Sparkles, Star, Trash2, Wallet, X } from "lucide-react";
 import { api, dayKey, hideId, refreshAll, relativeDay, unhideId, useData } from "./client";
 import { useToast } from "./toast";
 import { ReminderEditor } from "./ReminderEditor";
@@ -158,7 +158,9 @@ const EXAMPLES = [
 ];
 
 type ListDraft = { list: string; items: string[] };
+type PlaceDraft = { text: string; place: string; on: "arrive" | "leave"; repeat: boolean };
 type Draft =
+  | { kind: "place"; value: PlaceDraft }
   | { kind: "list"; value: ListDraft }
   | { kind: "due"; value: DueInput }
   | { kind: "reminder"; value: ReminderInput }
@@ -251,6 +253,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
         tasks: TaskInput[];
         dues?: DueInput[];
         listItems?: ListDraft[];
+        placeReminders?: PlaceDraft[];
         warning?: string;
         answer?: { text: string; lines?: string[] } | null;
         proposals?: Proposal[];
@@ -263,6 +266,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
       setDoneIds([]);
       setDrafts([
         ...r.transactions.map((value) => ({ kind: "expense" as const, value })),
+        ...(r.placeReminders || []).map((value) => ({ kind: "place" as const, value })),
         ...(r.listItems || []).map((value) => ({ kind: "list" as const, value })),
         ...(r.dues || []).map((value) => ({ kind: "due" as const, value })),
         ...(r.tasks || []).map((value) => ({ kind: "task" as const, value })),
@@ -309,6 +313,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
     const tasks = drafts.filter((d) => d.kind === "task").map((d) => d.value);
     const dues = drafts.filter((d) => d.kind === "due").map((d) => d.value);
     const listAdds = drafts.filter((d) => d.kind === "list").map((d) => d.value as ListDraft);
+    const placeAdds = drafts.filter((d) => d.kind === "place").map((d) => d.value as PlaceDraft);
     try {
       if (transactions.some((t) => !(t as TransactionInput).amount)) throw new Error("Add an amount to each money entry");
       if (reminders.length) await api("/api/reminders", { method: "POST", json: { items: reminders } });
@@ -316,7 +321,9 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
       if (tasks.length) await api("/api/tasks", { method: "POST", json: { items: tasks } });
       if (dues.length) await api("/api/dues", { method: "POST", json: { items: dues } });
       for (const l of listAdds) await api("/api/lists/add", { method: "POST", json: l });
+      if (placeAdds.length) await api("/api/place-reminders", { method: "POST", json: { items: placeAdds } });
       const parts = [
+        placeAdds.length && `${placeAdds.length} place reminder${placeAdds.length > 1 ? "s" : ""}`,
         listAdds.length && `${listAdds.reduce((n, l) => n + l.items.length, 0)} list item${listAdds.reduce((n, l) => n + l.items.length, 0) > 1 ? "s" : ""}`,
         dues.length && `${dues.length} due${dues.length > 1 ? "s" : ""}`,
         reminders.length && `${reminders.length} reminder${reminders.length > 1 ? "s" : ""}`,
@@ -483,6 +490,8 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
                 <div className="border-t border-line p-4">
                   {d.kind === "reminder" ? (
                     <ReminderEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "reminder", value: v } : x)))} />
+                  ) : d.kind === "place" ? (
+                    <PlaceDraftEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "place", value: v } : x)))} />
                   ) : d.kind === "list" ? (
                     <ListDraftEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "list", value: v } : x)))} />
                   ) : d.kind === "due" ? (
@@ -511,6 +520,35 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function PlaceDraftEditor({ value, onChange }: { value: PlaceDraft; onChange: (v: PlaceDraft) => void }) {
+  return (
+    <div className="grid gap-3">
+      <div>
+        <label className={label}>Remind me to</label>
+        <input className={field} value={value.text} onChange={(e) => onChange({ ...value, text: e.target.value })} />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={label}>When I</label>
+          <select className={field} value={value.on} onChange={(e) => onChange({ ...value, on: e.target.value as PlaceDraft["on"] })}>
+            <option value="arrive">reach</option>
+            <option value="leave">leave</option>
+          </select>
+        </div>
+        <div>
+          <label className={label}>Place</label>
+          <input className={field} value={value.place} onChange={(e) => onChange({ ...value, place: e.target.value })} />
+        </div>
+      </div>
+      <label className="flex items-center gap-2 text-sm text-muted">
+        <input type="checkbox" checked={value.repeat} onChange={(e) => onChange({ ...value, repeat: e.target.checked })} className="h-4 w-4 accent-indigo-500" />
+        Every time
+      </label>
+      <p className="text-xs text-muted">Works while Remindo is open on your phone. Save the place in More → Places.</p>
     </div>
   );
 }
@@ -578,6 +616,22 @@ function DueEditor({ value, onChange }: { value: DueInput; onChange: (v: DueInpu
 }
 
 function DraftSummary({ d }: { d: Draft }) {
+  if (d.kind === "place") {
+    return (
+      <>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-orange-500/15 text-orange-500">
+          <MapPin className="h-5 w-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-medium">{d.value.text}</span>
+          <span className="block text-xs text-muted">
+            {d.value.on === "arrive" ? "When you reach" : "When you leave"} {d.value.place}
+            {d.value.repeat ? " · every time" : ""}
+          </span>
+        </span>
+      </>
+    );
+  }
   if (d.kind === "list") {
     const items = d.value.items.filter((x) => x.trim());
     return (
@@ -881,6 +935,27 @@ function ExpensePanel({ id, initial, close }: { id?: string; initial?: Transacti
           <input type="checkbox" checked={asFavourite} onChange={(e) => setAsFavourite(e.target.checked)} className="h-4 w-4 accent-indigo-500" />
           Also save as a one-tap favourite
         </label>
+      )}
+      {id && value.type === "expense" && (
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              const r = await api<{ reminder: { title: string; dueAt: string }; existed: boolean }>(`/api/transactions/${id}/remind`, { method: "POST" });
+              refreshAll();
+              toast({
+                message: r.existed
+                  ? `You already have a monthly reminder for “${r.reminder.title}”`
+                  : `Monthly reminder set · next ${new Date(r.reminder.dueAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`,
+              });
+            } catch (e) {
+              toast({ message: (e as Error).message, tone: "error" });
+            }
+          }}
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-line py-2.5 text-sm font-medium text-muted hover:bg-raised hover:text-fg"
+        >
+          <Repeat className="h-4 w-4" /> Remind me about this every month
+        </button>
       )}
       {err && <p className="mt-3 text-sm text-rose-500">{err}</p>}
       <PanelActions saving={saving} disabled={!value.amount || value.amount <= 0} onSave={save} onDelete={id ? remove : undefined} />
