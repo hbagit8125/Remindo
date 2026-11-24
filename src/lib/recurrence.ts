@@ -51,6 +51,12 @@ export function alertsBetween(r: Schedulable, from: Date, to: Date): PlannedAler
 export function describeRrule(rrule: string | null): string {
   if (!rrule) return "";
   try {
+    const end = rrule.match(/BYMONTHDAY=[\d,]*?(\d+);BYSETPOS=-1/);
+    if (end) {
+      const n = Number(end[1]);
+      const every = /INTERVAL=([2-9]\d*)/.exec(rrule)?.[1];
+      return `every ${every ? `${every} months` : "month"} on the ${n}${n === 31 ? "st" : "th"} (or the last day)`;
+    }
     return RRule.fromString(rrule).toText();
   } catch {
     return "repeats";

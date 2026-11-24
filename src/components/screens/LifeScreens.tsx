@@ -12,6 +12,7 @@ import {
   FileText,
   GraduationCap,
   ListChecks,
+  MapPin,
   Pencil,
   Pill,
   Pin,
@@ -21,6 +22,8 @@ import {
 } from "lucide-react";
 import { api, refreshAll, relativeDay, useData } from "@/components/app/client";
 import { Empty, PageTitle, Section, SkeletonList } from "@/components/app/rows";
+import { SwipeRow } from "@/components/app/SwipeRow";
+import { listShareText, ShareButton } from "@/components/app/Share";
 import { useToast } from "@/components/app/toast";
 import { field, label } from "@/components/app/ReminderEditor";
 import { Modal, ghostBtn, primaryBtn, useSubmit } from "@/components/screens/MoneyPlus";
@@ -67,7 +70,7 @@ const daysTo = (d: string) => Math.round((Date.parse(`${d}T00:00:00Z`) - Date.pa
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const fmtMD = (md: string) => `${Number(md.slice(3))} ${MONTHS[Number(md.slice(0, 2)) - 1]}`;
 
-function Back({ href = "/more", text = "More" }: { href?: string; text?: string }) {
+export function Back({ href = "/more", text = "More" }: { href?: string; text?: string }) {
   return (
     <Link href={href} className="mb-3 inline-flex items-center gap-1 text-sm text-muted hover:text-fg">
       <ArrowLeft className="h-4 w-4" /> {text}
@@ -108,10 +111,11 @@ export function LifeTiles() {
     { href: "/life/health", icon: Pill, label: "Health", tint: "text-emerald-500 bg-emerald-500/15" },
     { href: "/life/study", icon: GraduationCap, label: "Study", tint: "text-violet-500 bg-violet-500/15" },
     { href: "/lists", icon: ListChecks, label: "Notes & lists", tint: "text-teal-500 bg-teal-500/15" },
+    { href: "/life/places", icon: MapPin, label: "Places", tint: "text-orange-500 bg-orange-500/15" },
   ];
   return (
     <Section title="Life">
-      <div className="grid grid-cols-3 gap-2 md:grid-cols-5">
+      <div className="grid grid-cols-3 gap-2 md:grid-cols-6">
         {tiles.map((t) => (
           <Link key={t.href} href={t.href} className="card flex flex-col items-center gap-2 rounded-2xl px-2 py-4 text-center transition hover:bg-raised">
             <span className={clsx("grid h-10 w-10 place-items-center rounded-xl", t.tint)}>
@@ -872,6 +876,12 @@ export function ListDetailScreen({ id }: { id: string }) {
         title={`${l.emoji || ""} ${l.name}`.trim()}
         right={
           <div className="flex gap-1">
+            <ShareButton
+              text={listShareText({ ...l, body: body ?? l.body })}
+              title={`Share ${l.name}`}
+              label=""
+              className="grid h-10 w-10 place-items-center rounded-xl text-subtle hover:bg-raised hover:text-indigo-500"
+            />
             <button
               onClick={() => api(`/api/lists/${id}`, { method: "PATCH", json: { pinned: !l.pinned } }).then(reload)}
               className={clsx("grid h-10 w-10 place-items-center rounded-xl hover:bg-raised", l.pinned ? "text-indigo-500" : "text-subtle")}
@@ -922,7 +932,13 @@ export function ListDetailScreen({ id }: { id: string }) {
           ) : (
             <div className="card divide-y divide-line overflow-hidden rounded-3xl">
               {[...open, ...done].map((it) => (
-                <div key={it.id} className="group flex items-center gap-3 px-4 py-3">
+                <SwipeRow
+                  key={it.id}
+                  className="rounded-none"
+                  right={{ label: it.done ? "Untick" : "Tick", icon: <Check className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => toggle(it) }}
+                  left={{ label: "Remove", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => remove(it) }}
+                >
+                <div className="group flex items-center gap-3 bg-surface px-4 py-3">
                   <button
                     onClick={() => toggle(it)}
                     className={clsx("grid h-6 w-6 shrink-0 place-items-center rounded-md border-2 transition", it.done ? "border-emerald-500 bg-emerald-500 text-white" : "border-line")}
@@ -935,6 +951,7 @@ export function ListDetailScreen({ id }: { id: string }) {
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
+                </SwipeRow>
               ))}
             </div>
           )}

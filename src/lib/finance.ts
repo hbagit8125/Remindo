@@ -198,12 +198,87 @@ export async function digestSpending(now = new Date()) {
   const ySpent = yRows.filter((r) => r.type === "expense" && r.date === yesterday).reduce((s, r) => s + r.amountPaise, 0);
   const s = summarize(month, rows);
   const limit = b[TOTAL_BUDGET];
-  if (!s.count && !ySpent && !limit) return "";
+  const tips = await moneyTips(now).catch(() => [] as string[]);
+  if (!s.count && !ySpent && !limit && !tips.length) return "";
+  const tipsHtml = tips.length ? `<ul style="margin:10px 0 0;padding-left:18px;font-size:13px;color:#374151">${tips.map((t) => `<li style="margin:3px 0">${esc(t)}</li>`).join("")}</ul>` : "";
   return `<h2 style="font-size:14px;margin:20px 0 8px;color:#374151">Spending</h2>
   <table style="width:100%;border-collapse:collapse;font-size:14px">
     <tr><td style="padding:4px 0;color:#6b7280">Yesterday</td><td style="text-align:right;font-weight:600">${esc(formatINR(ySpent))}</td></tr>
     <tr><td style="padding:4px 0;color:#6b7280">This month</td><td style="text-align:right;font-weight:600">${esc(formatINR(s.spent))}${limit ? ` <span style="color:#9ca3af;font-weight:400">of ${esc(formatINR(limit))}</span>` : ""}</td></tr>
-  </table>${limit ? `<div style="margin-top:8px">${budgetBar(s.spent, limit)}</div>` : ""}`;
+  </table>${limit ? `<div style="margin-top:8px">${budgetBar(s.spent, limit)}</div>` : ""}${tipsHtml}`;
+}
+
+/**
+ * Short, useful money notes for the morning digest:
+ * - how much of the monthly budget is left, and what that means per day
+ * - category budgets that are close to or over their limit
+ * - on Fri/Sat/Sun: what you usually spend on a weekend
+ * - if yesterday was well above your usual day
+ */
+export async function moneyTips(now = new Date()): Promise<string[]> {
+  const tips: string[] = [];
+  const today = fmtLocal(now, "yyyy-MM-dd");
+  const month = today.slice(0, 7);
+  const since = fmtLocal(new Date(now.getTime() - 63 * 86400000), "yyyy-MM-dd");
+  const [rows, b] = await Promise.all([
+    db()
+      .select()
+      .from(transactions)
+      .where(and(gte(transactions.date, since), lt(transactions.date, today), eq(transactions.type, "expense"))),
+    getBudgets(),
+  ]);
+  const monthRows = rows.filter((r) => r.date.startsWith(month));
+  const spent = monthRows.reduce((a, r) => a + r.amountPaise, 0);
+
+  // Budget left this month.
+  const limit = b[TOTAL_BUDGET];
+  if (limit) {
+    const [y, m, d] = today.split("-").map(Number);
+    const daysLeft = new Date(Date.UTC(y, m, 0)).getUTCDate() - d + 1; // including today
+    const left = limit - spent;
+    tips.push(
+      left > 0
+        ? `${formatINR(left)} of your ${formatINR(limit)} budget left · about ${formatINR(Math.floor(left / daysLeft / 100) * 100)}/day for the next ${daysLeft} day${daysLeft === 1 ? "" : "s"}`
+        : `You're ${formatINR(-left)} over this month's ${formatINR(limit)} budget`,
+    );
+  }
+  // Category budgets at 80%+.
+  for (const [cat, lim] of Object.entries(b)) {
+    if (cat === TOTAL_BUDGET || !lim) continue;
+    const c = monthRows.filter((r) => r.category === cat).reduce((a, r) => a + r.amountPaise, 0);
+    if (c >= lim) tips.push(`${cat}: ${formatINR(c)} spent, over its ${formatINR(lim)} budget`);
+    else if (c >= lim * 0.8) tips.push(`${cat}: ${formatINR(lim - c)} left of ${formatINR(lim)}`);
+  }
+
+  // Weekends (shown Fri–Sun): average of the last weekends you spent on.
+  const dow = new Date(`${today}T00:00:00Z`).getUTCDay(); // 0 Sun … 6 Sat
+  if (dow === 5 || dow === 6 || dow === 0) {
+    const byWeekend = new Map<string, number>();
+    for (const r of rows) {
+      const wd = new Date(`${r.date}T00:00:00Z`).getUTCDay();
+      if (wd !== 6 && wd !== 0) continue;
+      // Key each weekend by its Saturday.
+      const sat = new Date(Date.parse(`${r.date}T00:00:00Z`) - (wd === 0 ? 86400000 : 0)).toISOString().slice(0, 10);
+      byWeekend.set(sat, (byWeekend.get(sat) || 0) + r.amountPaise);
+    }
+    const totals = [...byWeekend.values()];
+    if (totals.length >= 2) {
+      const avg = totals.reduce((a, v) => a + v, 0) / totals.length;
+      tips.push(`You usually spend about ${formatINR(Math.round(avg / 10000) * 10000 || Math.round(avg))} on a weekend (last ${totals.length} weekends)`);
+    }
+  }
+
+  // Yesterday vs a usual day (last 30 days with any spending).
+  const yesterday = fmtLocal(new Date(now.getTime() - 86400000), "yyyy-MM-dd");
+  const cutoff = fmtLocal(new Date(now.getTime() - 31 * 86400000), "yyyy-MM-dd");
+  const perDay = new Map<string, number>();
+  for (const r of rows) if (r.date >= cutoff && r.date < yesterday) perDay.set(r.date, (perDay.get(r.date) || 0) + r.amountPaise);
+  const ySpent = rows.filter((r) => r.date === yesterday).reduce((a, r) => a + r.amountPaise, 0);
+  if (perDay.size >= 7 && ySpent) {
+    const usual = [...perDay.values()].reduce((a, v) => a + v, 0) / perDay.size;
+    if (ySpent > usual * 1.5 && ySpent - usual > 20000) tips.push(`Yesterday (${formatINR(ySpent)}) was above your usual ${formatINR(Math.round(usual / 100) * 100)} a day`);
+  }
+  return tips;
 }
 
 /** Week spend + top categories for the Sunday preview. */

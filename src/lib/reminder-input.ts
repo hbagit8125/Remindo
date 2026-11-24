@@ -18,6 +18,8 @@ export const reminderInputSchema = z.object({
     .regex(/^\d{2}:\d{2}$/, "time must be HH:mm")
     .nullish(),
   recurrence: z.enum(["none", "daily", "weekly", "monthly", "yearly"]).default("none"),
+  /** Monthly: the day you mean (e.g. 31) when the first date falls on a shorter month's last day. */
+  monthDay: z.number().int().min(1).max(31).nullish(),
   interval: z.coerce.number().int().min(1).max(365).default(1),
   weekdays: z.array(z.enum(WEEKDAYS)).nullish(),
   until: isoDay()
@@ -36,6 +38,12 @@ export function buildRrule(i: ReminderInput): string | null {
   if (i.recurrence === "none") return null;
   const parts = [`FREQ=${i.recurrence.toUpperCase()}`, `INTERVAL=${i.interval || 1}`];
   if (i.recurrence === "weekly" && i.weekdays?.length) parts.push(`BYDAY=${i.weekdays.join(",")}`);
+  // "Every month on the 31st" would skip shorter months; use the last day of those months instead.
+  const day = i.monthDay || Number(i.date.slice(8, 10));
+  if (i.recurrence === "monthly" && day >= 29) {
+    const days = Array.from({ length: day - 27 }, (_, k) => 28 + k).join(",");
+    parts.push(`BYMONTHDAY=${days}`, "BYSETPOS=-1");
+  }
   if (i.until) parts.push(`UNTIL=${i.until.replace(/-/g, "")}T235959Z`);
   return parts.join(";");
 }

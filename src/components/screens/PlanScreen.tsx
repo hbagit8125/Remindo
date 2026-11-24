@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { clsx } from "clsx";
 import { Bell, CalendarDays, CheckSquare, ChevronDown, ListTodo, Plus, Sun } from "lucide-react";
 import { dayKey, useData, useHidden } from "@/components/app/client";
+import { SwipeHint } from "@/components/app/SwipeRow";
 import { Empty, PageTitle, QuickTask, ReminderItem, Section, SkeletonList, TaskItem, useNow } from "@/components/app/rows";
 import { useSheet } from "@/components/app/AddSheet";
 import type { AgendaItem, FocusTask, ReminderRow, Task } from "@/components/types";
@@ -31,7 +32,7 @@ export function PlanScreen() {
     <div>
       <PageTitle
         title="Plan"
-        subtitle={<span className="md:hidden">Swipe right to finish, left to snooze or delete</span>}
+        subtitle={<span className="md:hidden">Swipe right to finish, left to delete (or skip a repeating one)</span>}
         right={
           <button
             onClick={() => open({ mode: view === "reminders" ? "reminder" : "task" })}
@@ -80,6 +81,7 @@ function TodayView() {
   if (agenda.loading || tasks.loading) return <SkeletonList />;
   return (
     <>
+      {total > 0 && <SwipeHint text="Tip: swipe a reminder right to mark it done, left to delete it (repeating ones: skip this time)." />}
       {total > 0 && (
         <div className="card mb-5 rounded-2xl p-4">
           <div className="mb-2 flex justify-between text-sm">

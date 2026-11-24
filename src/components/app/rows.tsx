@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Check, Clock, Repeat, Trash2, IndianRupee, Star, CalendarDays, Plus } from "lucide-react";
+import { Check, Clock, Repeat, Trash2, IndianRupee, Star, CalendarDays, Plus, SkipForward } from "lucide-react";
 import { api, dayKey, fmt, hideId, refreshAll, relativeDay, TZ, unhideId } from "./client";
 import { useToast } from "./toast";
 import { useSheet } from "./AddSheet";
@@ -38,7 +38,7 @@ export function reminderToInput(r: ReminderRow): ReminderInput {
 }
 
 export function useReminderActions() {
-  const { toast } = useToast();
+  const { toast, undoable } = useToast();
   const { open } = useSheet();
 
   async function post(i: AgendaItem, action: string, minutes?: number) {
@@ -78,6 +78,21 @@ export function useReminderActions() {
       refreshAll();
       toast({ message: `Snoozed until ${res.snoozedUntil ? fmt.time.format(new Date(res.snoozedUntil)) : "later"}` });
       return res.snoozedUntil ?? null;
+    },
+    /** One-off reminder: delete it (with Undo). */
+    remove(i: AgendaItem) {
+      hideId(i.reminderId);
+      undoable(
+        `“${i.title}” deleted`,
+        () => api(`/api/reminders/${i.reminderId}`, { method: "DELETE" }).then(refreshAll),
+        () => unhideId(i.reminderId),
+      );
+    },
+    /** Repeating reminder: skip just this time (the series stays). */
+    async skip(i: AgendaItem) {
+      await post(i, "done");
+      refreshAll();
+      toast({ message: `Skipped “${i.title}” this time`, action: { label: "Undo", onClick: () => post(i, "undo").then(refreshAll) } });
     },
     async log(i: AgendaItem) {
       await post(i, "log");
@@ -119,7 +134,13 @@ export function ReminderItem({ i, showDay, now }: { i: AgendaItem; showDay?: boo
   return (
     <SwipeRow
       right={i.done ? undefined : { label: "Done", icon: <Check className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => a.done(i) }}
-      left={i.done ? undefined : { label: "Snooze 1h", icon: <Clock className="h-5 w-5" />, className: "bg-indigo-500", onTrigger: () => snooze(60) }}
+      left={
+        i.done
+          ? undefined
+          : i.recurring
+            ? { label: "Skip this time", icon: <SkipForward className="h-5 w-5" />, className: "bg-amber-500", onTrigger: () => a.skip(i) }
+            : { label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => a.remove(i) }
+      }
     >
       <div
         className={clsx(
@@ -211,6 +232,23 @@ export function TxItem({ t }: { t: Transaction }) {
   const m = transfer ? { emoji: "⇄", color: "#64748b" } : categoryMeta(t.category);
   const income = t.type === "income";
 
+  const { toast } = useToast();
+  /** One tap: make this expense a monthly bill reminder. */
+  const remindMonthly = async () => {
+    try {
+      const r = await api<{ reminder: { id: string; title: string; dueAt: string }; existed: boolean }>(`/api/transactions/${t.id}/remind`, { method: "POST" });
+      refreshAll();
+      if (r.existed) return toast({ message: `You already have a monthly reminder for “${r.reminder.title}”` });
+      toast({
+        message: `Monthly reminder set · next ${fmt.dayShort.format(new Date(r.reminder.dueAt))}`,
+        action: { label: "Undo", onClick: () => api(`/api/reminders/${r.reminder.id}`, { method: "DELETE" }).then(refreshAll) },
+        duration: 8000,
+      });
+    } catch (e) {
+      toast({ message: (e as Error).message, tone: "error" });
+    }
+  };
+
   const remove = () => {
     hideId(t.id);
     undoable(
@@ -221,7 +259,14 @@ export function TxItem({ t }: { t: Transaction }) {
   };
 
   return (
-    <SwipeRow left={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: remove }}>
+    <SwipeRow
+      right={
+        t.type === "expense" && !t.reminderId
+          ? { label: "Remind monthly", icon: <Repeat className="h-5 w-5" />, className: "bg-indigo-500", onTrigger: remindMonthly }
+          : undefined
+      }
+      left={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: remove }}
+    >
       <button
         onClick={() =>
           open({
