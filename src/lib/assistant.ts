@@ -277,8 +277,8 @@ export async function executeCommand(x: z.infer<typeof executeSchema>, now = new
     if (x.action === "complete") return (await updateTask(x.id, { done: true }, now)) ? "Task done ✓" : "Task not found";
     if (x.action === "reschedule") return (await updateTask(x.id, { dueDate: x.date || null }, now)) ? "Task updated" : "Task not found";
     if (x.action === "delete") {
-      await db().delete(tasks).where(eq(tasks.id, x.id));
-      return "Task deleted";
+      const { deleteTask } = await import("./tasks");
+      return (await deleteTask(x.id)) ? "Task deleted" : "Task not found";
     }
     return "That doesn't apply to tasks";
   }
@@ -297,10 +297,11 @@ export async function executeCommand(x: z.infer<typeof executeSchema>, now = new
       const res = await logReminderPayment(r.id, occ);
       return "transaction" in res && res.transaction ? `${formatINR(res.transaction.amountPaise)} logged` : "Nothing to log";
     }
-    case "delete":
-      await cancelQueued(r.id);
-      await db().delete(reminders).where(eq(reminders.id, r.id));
+    case "delete": {
+      const { deleteReminders } = await import("./create");
+      await deleteReminders([r.id]);
       return `“${r.title}” deleted`;
+    }
     case "reschedule": {
       const input = (r.input as ReminderInput) || null;
       const base: ReminderInput = input || {
@@ -315,11 +316,14 @@ export async function executeCommand(x: z.infer<typeof executeSchema>, now = new
         leadTimes: r.leadTimes,
       };
       const next: ReminderInput = { ...base, date: x.date || base.date, time: x.time !== undefined && x.time !== null ? x.time : base.time };
-      await cancelQueued(r.id);
-      await db()
-        .update(reminders)
-        .set({ ...inputToRow(next), version: sql`${reminders.version} + 1`, updatedAt: new Date() })
-        .where(eq(reminders.id, r.id));
+      const { changeRow } = await import("./undo");
+      await changeRow("reminders", r.id, `Moved “${r.title}”`, "edit", async () => {
+        await cancelQueued(r.id);
+        await db()
+          .update(reminders)
+          .set({ ...inputToRow(next), version: sql`${reminders.version} + 1`, updatedAt: new Date() })
+          .where(eq(reminders.id, r.id));
+      });
       await planAndQueue({ reminderIds: [r.id] });
       return `Moved to ${fmtLocal(localToUtc(next.date, next.time || "09:00"), next.time ? "EEE d MMM, h:mm a" : "EEE d MMM")}`;
     }

@@ -3,6 +3,7 @@ import { and, eq, ilike, isNotNull } from "drizzle-orm";
 import { db, reminders, transactions } from "@/db";
 import { createReminders } from "@/lib/create";
 import { fmtLocal } from "@/lib/time";
+import { withUndo } from "@/lib/undo-route";
 
 type Ctx = { params: Promise<{ id: string }> };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -11,7 +12,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * Turn an expense into a monthly bill reminder (same day each month, with the amount),
  * so next time you get reminded and can log it with one tap.
  */
-export async function POST(_req: Request, { params }: Ctx) {
+export const POST = withUndo(async (_req: Request, { params }: Ctx) => {
   const { id } = await params;
   if (!UUID.test(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const [t] = await db().select().from(transactions).where(eq(transactions.id, id));
@@ -60,4 +61,4 @@ export async function POST(_req: Request, { params }: Ctx) {
     },
   ]);
   return NextResponse.json({ reminder: r, existed: false });
-}
+});

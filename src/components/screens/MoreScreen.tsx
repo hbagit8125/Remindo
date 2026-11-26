@@ -7,6 +7,7 @@ import {
   BellRing,
   Download,
   ExternalLink,
+  History,
   Loader2,
   LogOut,
   Mail,
@@ -223,6 +224,15 @@ export function MoreScreen() {
     <div>
       <PageTitle title="More" subtitle="Notifications, emails and app settings" />
       <LifeTiles />
+      <Link href="/history" className="card mb-6 flex items-center gap-3 rounded-2xl px-4 py-3.5 transition hover:bg-raised">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-indigo-500/15 text-indigo-500">
+          <History className="h-5 w-5" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-medium">History &amp; undo</span>
+          <span className="block text-xs text-muted">Everything you did in the last 30 days. Tap Undo to put it back.</span>
+        </span>
+      </Link>
 
       <Group title="Where reminders reach you">
         <Row icon={<Smartphone className="h-[18px] w-[18px]" />} title="Phone notifications" desc={pushDesc[push.state]}>

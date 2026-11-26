@@ -31,6 +31,15 @@ export const todayStr = (now = new Date()) => fmtLocal(now, "yyyy-MM-dd");
 
 export async function createTasks(items: TaskInput[], now = new Date()) {
   if (!items.length) return [];
+  const { recorded, removed, addedTitle } = await import("./undo");
+  return recorded({ title: (c: Task[]) => addedTitle("task", c.map((t) => t.title)), kind: "add" }, async (rec) => {
+    const created = await insertTasks(items, now);
+    rec(removed("tasks", created.map((t) => t.id)));
+    return created;
+  });
+}
+
+function insertTasks(items: TaskInput[], now: Date) {
   return db()
     .insert(tasks)
     .values(
@@ -46,6 +55,34 @@ export async function createTasks(items: TaskInput[], now = new Date()) {
 }
 
 export async function updateTask(id: string, p: TaskPatch, now = new Date()) {
+  const undo = await import("./undo");
+  const [before] = await db().select().from(tasks).where(eq(tasks.id, id));
+  if (!before) return null;
+  // Un-ticking is itself an undo: close the "Done" entry instead of adding a new one.
+  if (p.done === false && before.done) await undo.markUndone(`task:${id}`);
+  const title =
+    p.done === true && !before.done
+      ? `Done · ${before.title}`
+      : p.done === false && before.done
+        ? null
+        : p.focus !== undefined && Object.keys(p).length === 1
+          ? `${p.focus ? "Added to" : "Removed from"} today's focus · ${before.title}`
+          : `Edited task “${before.title}”`;
+  return undo.recorded({ title, kind: p.done ? "done" : "edit", ref: p.done ? `task:${id}` : undefined }, async (rec) => {
+    rec(await undo.snap("tasks", [id]));
+    return patchTask(id, p, now);
+  });
+}
+
+/** Delete a task (Undo brings it back). */
+export async function deleteTask(id: string) {
+  const [t] = await db().select().from(tasks).where(eq(tasks.id, id));
+  if (!t) return null;
+  const { changeRow } = await import("./undo");
+  return changeRow("tasks", id, `Deleted task “${t.title}”`, "delete", () => db().delete(tasks).where(eq(tasks.id, id)).then(() => t));
+}
+
+async function patchTask(id: string, p: TaskPatch, now: Date) {
   const set: Partial<typeof tasks.$inferInsert> = { updatedAt: new Date() };
   if (p.title !== undefined) set.title = p.title;
   if (p.notes !== undefined) set.notes = p.notes || null;

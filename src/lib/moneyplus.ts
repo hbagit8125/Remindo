@@ -101,6 +101,25 @@ export const dueInputSchema = z.object({
 export type DueInput = z.infer<typeof dueInputSchema>;
 
 export async function createDues(items: DueInput[], now = new Date()) {
+  if (!items.length) return [];
+  const { recorded, removed, money } = await import("./undo");
+  return recorded(
+    {
+      title:
+        items.length === 1
+          ? `Added: ${items[0].direction === "they_owe" ? `${items[0].person} owes you` : `you owe ${items[0].person}`} ${money(toPaise(items[0].amount))}`
+          : `Added ${items.length} dues`,
+      kind: "add",
+    },
+    async (rec) => {
+      const out = await insertDues(items, now);
+      rec(removed("dues", out.map((d) => d.id)));
+      return out;
+    },
+  );
+}
+
+async function insertDues(items: DueInput[], now: Date) {
   const out = [];
   for (const d of items) {
     // No date given (AI sends null, the form leaves it empty) → follow up in 3 days.
@@ -150,6 +169,31 @@ export async function listDues() {
  * The due's follow-up reminder is closed (and taken off today's lists).
  */
 export async function settleDue(id: string, opts: { log: boolean; accountId?: string | null }, now = new Date()) {
+  const undo = await import("./undo");
+  const [cur] = await db().select().from(dues).where(eq(dues.id, id));
+  if (!cur || cur.settledAt) return null;
+  return undo.recorded(
+    {
+      title: cur.direction === "they_owe" ? `${cur.person} paid you back ${undo.money(cur.amountPaise)}` : `Paid back ${cur.person} ${undo.money(cur.amountPaise)}`,
+      kind: "settle",
+      ref: `due:${id}`,
+    },
+    async (rec) => {
+      // Undo: open the due again (removes the refund entry) and bring its reminder back.
+      const { splits } = await import("@/db");
+      rec(await undo.snap("reminders", [cur.reminderId]));
+      if (cur.splitId) {
+        const [sp] = await db().select().from(splits).where(eq(splits.id, cur.splitId));
+        rec(await undo.snap("transactions", [sp?.transactionId]));
+        rec(await undo.snap("reminders", [sp?.reminderId]));
+      }
+      rec({ op: "unsettle", dueId: id });
+      return settleDueInner(id, opts, now);
+    },
+  );
+}
+
+async function settleDueInner(id: string, opts: { log: boolean; accountId?: string | null }, now: Date) {
   const [d] = await db().update(dues).set({ settledAt: new Date() }).where(and(eq(dues.id, id), isNull(dues.settledAt))).returning();
   if (!d) return null;
   if (d.reminderId) {
@@ -188,6 +232,7 @@ export async function settleDue(id: string, opts: { log: boolean; accountId?: st
 export async function unsettleDue(id: string) {
   const [d] = await db().select().from(dues).where(eq(dues.id, id));
   if (!d || !d.settledAt) return null;
+  await import("./undo").then((u) => u.markUndone(`due:${id}`));
   const { transactions } = await import("@/db");
   if (d.transactionId) await db().delete(transactions).where(eq(transactions.id, d.transactionId));
   const [row] = await db().update(dues).set({ settledAt: null, transactionId: null }).where(eq(dues.id, id)).returning();
@@ -199,8 +244,12 @@ export async function unsettleDue(id: string) {
 export async function settlePerson(person: string, opts: { accountId?: string | null } = {}, now = new Date()) {
   const open = await db().select().from(dues).where(and(isNull(dues.settledAt)));
   const mine = open.filter((d) => d.person.toLowerCase() === person.toLowerCase());
-  for (const d of mine) await settleDue(d.id, { log: true, accountId: opts.accountId }, now);
-  return mine.length;
+  if (!mine.length) return 0;
+  const { recorded } = await import("./undo");
+  return recorded({ title: `Settled up with ${mine[0].person}`, kind: "settle" }, async () => {
+    for (const d of mine) await settleDue(d.id, { log: true, accountId: opts.accountId }, now);
+    return mine.length;
+  });
 }
 
 // ------------------------------------------------------------- goals
@@ -248,11 +297,16 @@ export async function listGoals(now = new Date()) {
 }
 
 export async function addContribution(goalId: string, amount: number, note: string | null, now = new Date()) {
-  const [row] = await db()
-    .insert(goalContributions)
-    .values({ goalId, amountPaise: toPaise(amount), note, date: fmtLocal(now, "yyyy-MM-dd") })
-    .returning();
-  return row;
+  const { recorded, removed, money } = await import("./undo");
+  const [g] = await db().select().from(goals).where(eq(goals.id, goalId));
+  return recorded({ title: `${amount < 0 ? "Took" : "Added"} ${money(Math.abs(toPaise(amount)))} ${amount < 0 ? "from" : "to"} ${g?.name || "goal"}`, kind: "add" }, async (rec) => {
+    const [row] = await db()
+      .insert(goalContributions)
+      .values({ goalId, amountPaise: toPaise(amount), note, date: fmtLocal(now, "yyyy-MM-dd") })
+      .returning();
+    rec(removed("goalContributions", [row.id]));
+    return row;
+  });
 }
 
 // ------------------------------------------------------------- yearly view

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { db, telegramDrafts } from "@/db";
+import { activity, db, telegramDrafts } from "@/db";
 import { safeEqual } from "@/lib/auth";
 import { getTelegram, setSetting } from "@/lib/settings";
 import { answerCallback, downloadFile, editTelegram, h, sendTelegram, webhookSecret } from "@/lib/telegram";
@@ -12,6 +12,7 @@ import { answerQuestion, executeCommand, resolveCommand, type Candidate, type Co
 import { createReminders, createTransactions } from "@/lib/create";
 import { createTasks, focusFrom, listTasks } from "@/lib/tasks";
 import { ACTIONS, performAction, type ActionName } from "@/lib/actions";
+import { listActivity, track, undoActivity } from "@/lib/undo";
 import { agenda } from "@/lib/scheduler";
 import { formatINR } from "@/lib/money";
 import { config } from "@/lib/config";
@@ -43,6 +44,7 @@ const HELP = `<b>What I can do</b>
 • Tap the buttons on reminders to mark them done or snooze
 • Ask: <i>"How much did I spend on food this month?"</i>, <i>"When is Ammu's birthday?"</i>
 • Change things: <i>"Move the dentist to Friday 5pm"</i>, <i>"Mark rent as paid"</i>
+• Did something by mistake? Tap <b>↩️ Undo</b>, or send /undo to undo the last change
 • /today: today's focus tasks and reminders
 • /help: this message`;
 
@@ -91,6 +93,13 @@ async function onMessage(m: TgMessage) {
 
   if (text === "/help") return sendTelegram(HELP);
   if (text === "/today") return sendTelegram(await todayText());
+  // Undo the last thing you did (anywhere).
+  if (text === "/undo") {
+    const [last] = (await listActivity(20)).filter((x) => !x.undoneAt);
+    if (!last) return sendTelegram("Nothing to undo.");
+    const res = await undoActivity(last.id);
+    return sendTelegram(`↩️ ${h(res.message)}`);
+  }
 
   // A photo (or image file) of a receipt / UPI screenshot → expense draft.
   const image = m.photo?.length ? { id: m.photo[m.photo.length - 1].file_id, mime: "image/jpeg" } : m.document?.mime_type?.startsWith("image/") ? { id: m.document.file_id, mime: m.document.mime_type } : null;
@@ -175,8 +184,21 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
     await answerCallback(q.id, res.title);
     const base = h(msg.text || "");
     const icon = a === "done" ? "✅" : a === "log" ? "💸" : "⏰";
-    const keyboard = res.canLog ? [[{ text: `Log ${formatINR(res.canLog)} as paid`, callback_data: `a:log:${b}` }]] : undefined;
-    return editTelegram(chatId, msg.message_id, `${base}\n\n${icon} <b>${h(res.title)}</b>. ${h(res.message)}`, keyboard);
+    const keyboard = [
+      ...(res.canLog ? [[{ text: `Log ${formatINR(res.canLog)} as paid`, callback_data: `a:log:${b}` }]] : []),
+      ...(res.undoId ? [[undoButton(res.undoId)]] : []),
+    ];
+    return editTelegram(chatId, msg.message_id, `${base}\n\n${icon} <b>${h(res.title)}</b>. ${h(res.message)}`, keyboard.length ? keyboard : undefined);
+  }
+
+  // Undo: u:<activityId>
+  if (kind === "u" && a) {
+    const res = await undoActivity(a);
+    await answerCallback(q.id, res.title);
+    // Reminder alerts get their buttons back from the undo itself; other messages just say so.
+    const fresh = await db().select().from(activity).where(eq(activity.id, a));
+    if (fresh[0]?.kind === "done" || fresh[0]?.kind === "snooze") return;
+    return editTelegram(chatId, msg.message_id, `${h(stripStatus(msg.text || ""))}\n\n↩️ <i>${h(res.message)}</i>`);
   }
 
   // Confirm a command: x:<draftId>:<index|all>
@@ -189,10 +211,16 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
     await db().delete(telegramDrafts).where(eq(telegramDrafts.id, a));
     const exec = (draft.payload as { exec: Parameters<typeof executeCommand>[0][] }).exec;
     const chosen = b === "all" ? exec : [exec[Number(b)]].filter(Boolean);
-    const results = [];
-    for (const e of chosen) results.push(await executeCommand(e));
+    const { value: results, undoId } = await track(
+      async () => {
+        const out: string[] = [];
+        for (const e of chosen) out.push(await executeCommand(e));
+        return out;
+      },
+      { via: "telegram" },
+    );
     await answerCallback(q.id, "Done");
-    return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ ${h(results.join(" · "))}`);
+    return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ ${h(results.join(" · "))}`, undoId ? [[undoButton(undoId)]] : undefined);
   }
 
   // Draft buttons: s:<draftId> (save) / c:<draftId> (cancel)
@@ -208,6 +236,21 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
       return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✖ <i>Cancelled</i>`);
     }
     const p = draft.payload as ParseResult;
+    const { value: splitLines, undoId } = await track(() => saveDraft(p), { via: "telegram" });
+    await answerCallback(q.id, "Saved");
+    return editTelegram(
+      chatId,
+      msg.message_id,
+      `${h(msg.text || "")}\n\n✅ <b>Saved</b>${splitLines.length ? `\n${splitLines.map(h).join("\n")}` : ""}`,
+      undoId ? [[undoButton(undoId)]] : undefined,
+    );
+  }
+  return answerCallback(q.id);
+}
+
+/** Save everything in a confirmed draft. Returns summary lines for splits. */
+async function saveDraft(p: ParseResult) {
+  {
     await createReminders(p.reminders || []);
     await createTransactions(p.transactions || []);
     await createTasks(p.tasks || []);
@@ -224,11 +267,13 @@ async function onCallback(q: NonNullable<TgUpdate["callback_query"]>) {
     }
     for (const l of p.listItems || []) await addToList(l.list, l.items);
     if (p.placeReminders?.length) await addPlaceReminders(p.placeReminders);
-    await answerCallback(q.id, "Saved");
-    return editTelegram(chatId, msg.message_id, `${h(msg.text || "")}\n\n✅ <b>Saved</b>${splitLines.length ? `\n${splitLines.map(h).join("\n")}` : ""}`);
+    return splitLines;
   }
-  return answerCallback(q.id);
 }
+
+const undoButton = (id: string) => ({ text: "↩️ Undo", callback_data: `u:${id}` });
+/** Drop the "✅ Saved" line we added before, when undoing. */
+const stripStatus = (t: string) => t.replace(/\n\n(✅|💸|⏰)[\s\S]*$/, "");
 
 function draftText(p: ParseResult) {
   const lines: string[] = ["<b>Here's what I understood:</b>"];

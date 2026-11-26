@@ -1,5 +1,6 @@
 import { connection, NextResponse } from "next/server";
 import { deleteSplit, friendly, getSplit, updateSplit } from "@/lib/splits";
+import { withUndo } from "@/lib/undo-route";
 
 type Ctx = { params: Promise<{ id: string }> };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -13,7 +14,7 @@ export async function GET(_req: Request, { params }: Ctx) {
   return s ? NextResponse.json({ split: s }) : notFound();
 }
 
-export async function PATCH(req: Request, { params }: Ctx) {
+export const PATCH = withUndo(async (req: Request, { params }: Ctx) => {
   const { id } = await params;
   if (!UUID.test(id)) return notFound();
   try {
@@ -22,12 +23,12 @@ export async function PATCH(req: Request, { params }: Ctx) {
   } catch (e) {
     return NextResponse.json({ error: friendly(e) }, { status: 400 });
   }
-}
+});
 
 /** ?expense=1 also deletes the bill's expense (otherwise only the split goes). */
-export async function DELETE(req: Request, { params }: Ctx) {
+export const DELETE = withUndo(async (req: Request, { params }: Ctx) => {
   const { id } = await params;
   if (!UUID.test(id)) return notFound();
   const ok = await deleteSplit(id, { deleteExpense: new URL(req.url).searchParams.get("expense") === "1" });
   return ok ? NextResponse.json({ ok: true }) : notFound();
-}
+});

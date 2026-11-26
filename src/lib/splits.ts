@@ -79,7 +79,7 @@ async function closeReminder(reminderId: string | null) {
   await db().update(reminders).set({ status: "archived", updatedAt: new Date() }).where(eq(reminders.id, r.id));
 }
 
-export async function createSplit(raw: SplitInput, now = new Date()) {
+async function createSplitInner(raw: SplitInput, now = new Date()) {
   const d = splitInputSchema.parse(raw);
   const { total, computed, mine } = validate(d);
   const owedToMe = d.paidBy === ME ? others(computed) : [];
@@ -134,7 +134,7 @@ export async function createSplit(raw: SplitInput, now = new Date()) {
 }
 
 /** Change a split. People who already paid stay ticked (their payback follows the new amount). */
-export async function updateSplit(id: string, raw: SplitInput) {
+async function updateSplitInner(id: string, raw: SplitInput) {
   const [cur] = await db().select().from(splits).where(eq(splits.id, id));
   if (!cur) return null;
   const d = splitInputSchema.parse(raw);
@@ -180,7 +180,7 @@ export async function updateSplit(id: string, raw: SplitInput) {
  * Remove a split: its dues and paybacks go. The expense goes too when the split created it
  * for a friend-paid bill, or when you ask for the whole bill to be deleted.
  */
-export async function deleteSplit(id: string, opts: { deleteExpense?: boolean } = {}) {
+async function deleteSplitInner(id: string, opts: { deleteExpense?: boolean } = {}) {
   const [s] = await db().select().from(splits).where(eq(splits.id, id));
   if (!s) return false;
   const ds = await db().select().from(dues).where(eq(dues.splitId, id));
@@ -271,7 +271,7 @@ export const groupInputSchema = z.object({
 export async function listGroups() {
   return db().select().from(splitGroups).orderBy(splitGroups.name);
 }
-export async function saveGroup(input: z.infer<typeof groupInputSchema>, id?: string) {
+async function saveGroupInner(input: z.infer<typeof groupInputSchema>, id?: string) {
   const members = [...new Set(input.members.map((m) => m.replace(/^\w/, (c) => c.toUpperCase())))].filter((m) => !/^(me|you)$/i.test(m));
   if (id) {
     const [g] = await db().update(splitGroups).set({ name: input.name, members }).where(eq(splitGroups.id, id)).returning();
@@ -280,7 +280,7 @@ export async function saveGroup(input: z.infer<typeof groupInputSchema>, id?: st
   const [g] = await db().insert(splitGroups).values({ name: input.name, members }).returning();
   return g;
 }
-export async function deleteGroup(id: string) {
+async function deleteGroupInner(id: string) {
   await db().delete(splitGroups).where(eq(splitGroups.id, id));
 }
 
@@ -308,4 +308,69 @@ export function splitSummary(s: SplitView | null) {
         : "nobody owes you"
       : `you owe ${s.paidBy} ${formatINR(s.myPaise)}`;
   return `🧾 ${s.title} ${formatINR(s.totalPaise)} · your share ${formatINR(s.myPaise)} · ${tail}`;
+}
+
+// ------------------------------------------------------------- undoable wrappers
+
+/** Everything a split touches, so Undo can put it back exactly. */
+async function snapSplit(id: string) {
+  const u = await import("./undo");
+  const [s] = await db().select().from(splits).where(eq(splits.id, id));
+  if (!s) return null;
+  const ds = await db().select().from(dues).where(eq(dues.splitId, id));
+  const ops = [
+    await u.snap("transactions", [s.transactionId, ...ds.map((x) => x.transactionId)]),
+    await u.snapReminder(s.reminderId),
+    await u.snap("splits", [id]),
+    await u.snapWhere("dues", "splitId", id),
+  ].filter(Boolean) as import("./undo").Op[];
+  return { op: "seq" as const, ops };
+}
+
+export async function createSplit(raw: SplitInput, now = new Date()) {
+  const u = await import("./undo");
+  return u.recorded({ title: (v: SplitView | null) => (v ? `Split ${v.title} ${u.money(v.totalPaise)}` : null), kind: "add" }, async (rec) => {
+    if (raw.transactionId) rec(await u.snap("transactions", [raw.transactionId]));
+    const v = await createSplitInner(raw, now);
+    if (v) {
+      rec(u.removed("dues", v.dues.map((d) => d.id)));
+      rec(u.removed("splits", [v.id]));
+    }
+    return v;
+  });
+}
+
+export async function updateSplit(id: string, raw: SplitInput) {
+  const u = await import("./undo");
+  const [cur] = await db().select().from(splits).where(eq(splits.id, id));
+  return u.recorded({ title: cur ? `Edited split ${cur.title}` : null, kind: "edit" }, async (rec) => {
+    rec(await snapSplit(id));
+    return updateSplitInner(id, raw);
+  });
+}
+
+export async function deleteSplit(id: string, opts: { deleteExpense?: boolean } = {}) {
+  const u = await import("./undo");
+  const [cur] = await db().select().from(splits).where(eq(splits.id, id));
+  return u.recorded({ title: cur ? `Deleted split ${cur.title}` : null, kind: "delete" }, async (rec) => {
+    rec(await snapSplit(id));
+    return deleteSplitInner(id, opts);
+  });
+}
+
+export async function saveGroup(input: z.infer<typeof groupInputSchema>, id?: string) {
+  const u = await import("./undo");
+  return u.recorded({ title: `${id ? "Edited" : "Added"} group ${input.name}`, kind: id ? "edit" : "add" }, async (rec) => {
+    if (id) rec(await u.snap("splitGroups", [id]));
+    const g = await saveGroupInner(input, id);
+    if (!id && g) rec(u.removed("splitGroups", [g.id]));
+    return g;
+  });
+}
+
+export async function deleteGroup(id: string) {
+  const u = await import("./undo");
+  const [g] = await db().select().from(splitGroups).where(eq(splitGroups.id, id));
+  if (!g) return;
+  await u.changeRow("splitGroups", id, `Deleted group ${g.name}`, "delete", () => deleteGroupInner(id));
 }

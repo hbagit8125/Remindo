@@ -5,7 +5,10 @@ import { sendPush } from "./push";
 import { fmtLocal } from "./time";
 import type { Via } from "./scheduler";
 
-type Change = { state: "done"; via: Via } | { state: "undone"; via: Via } | { state: "snoozed"; until: Date; via: Via };
+type Change =
+  | { state: "done"; via: Via; undoId?: string | null }
+  | { state: "undone"; via: Via }
+  | { state: "snoozed"; until: Date; via: Via; undoId?: string | null };
 
 const VIA_LABEL: Record<Via, string> = { app: "in Remindo", email: "from email", push: "from the notification", telegram: "on Telegram" };
 
@@ -34,7 +37,8 @@ export async function syncOccurrence(r: Reminder, occurrenceAt: Date, change: Ch
   await Promise.allSettled([
     // Telegram messages
     ...tg.map(async (d) => {
-      if (text) return editTelegram(d.tgChatId!, d.tgMessageId!, text);
+      // Done / snoozed by mistake? One tap puts it back.
+      if (text) return editTelegram(d.tgChatId!, d.tgMessageId!, text, "undoId" in change && change.undoId ? [[{ text: "↩️ Undo", callback_data: `u:${change.undoId}` }]] : undefined);
       // Undone: restore the alert with its buttons.
       const { telegramAlertText, reminderKeyboard } = await import("./scheduler");
       return editTelegram(d.tgChatId!, d.tgMessageId!, telegramAlertText(r, "Not done yet", fmtLocal(occurrenceAt, "h:mm a, EEE d MMM")), reminderKeyboard(d.id, r.amountPaise));

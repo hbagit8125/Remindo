@@ -2,7 +2,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { CheckCircle2, AlertCircle } from "lucide-react";
+import { CheckCircle2, AlertCircle, Undo2 } from "lucide-react";
+import { api, takeRecentUndos, undoChanges, withoutUndoCapture } from "./client";
 
 type Toast = {
   id: number;
@@ -11,6 +12,8 @@ type Toast = {
   action?: { label: string; onClick: () => void };
   duration: number;
   onExpire?: () => void;
+  /** History entries this toast can undo (filled in automatically from the change that just happened). */
+  undoIds?: string[];
 };
 
 type Ctx = {
@@ -53,12 +56,32 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   );
 
   const toast: Ctx["toast"] = useCallback(
-    (t) => show({ ...t, id: ++seq.current, duration: t.duration ?? (t.action ? 7000 : 2500) }),
+    (t) => {
+      // Every change the server recorded gets an Undo button, unless this toast already undoes it.
+      const ids = t.tone === "error" ? [] : takeRecentUndos();
+      const undoIds = ids.length && t.action?.label !== "Undo" ? ids : undefined;
+      show({ ...t, undoIds, id: ++seq.current, duration: t.duration ?? (t.action || undoIds ? 7000 : 2500) });
+    },
+    [show],
+  );
+
+  const notify = useCallback((message: string, tone: "ok" | "error") => show({ id: ++seq.current, message, tone, duration: 3000 }), [show]);
+
+  const runUndo = useCallback(
+    async (ids: string[]) => {
+      try {
+        const r = await undoChanges(ids);
+        show({ id: ++seq.current, message: r.ok ? `↩️ ${r.message}` : r.message, tone: r.ok ? "ok" : "error", duration: 3000 });
+      } catch (e) {
+        show({ id: ++seq.current, message: (e as Error).message, tone: "error", duration: 4000 });
+      }
+    },
     [show],
   );
 
   const undoable: Ctx["undoable"] = useCallback(
     (message, commit, revert) => {
+      takeRecentUndos(); // this toast has its own Undo
       let undone = false;
       const t: Toast = {
         id: ++seq.current,
@@ -72,7 +95,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           },
         },
         onExpire: () => {
-          if (!undone) void commit();
+          // Delayed delete: it's in History, but the next toast shouldn't offer to undo it.
+          if (!undone) void withoutUndoCapture(commit);
         },
       };
       show(t);
@@ -89,6 +113,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ToastCtx.Provider value={{ toast, undoable }}>
+      <UndoShortcut onUndo={notify} />
       {children}
       {current && (
         <div className="pointer-events-none fixed inset-x-0 bottom-24 z-[70] flex justify-center px-4 md:bottom-6">
@@ -115,9 +140,47 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 {current.action.label}
               </button>
             )}
+            {current.undoIds && (
+              <button
+                onClick={() => {
+                  const ids = current.undoIds!;
+                  if (timer.current) clearTimeout(timer.current);
+                  pending.current = null;
+                  setCurrent(null);
+                  void runUndo(ids);
+                }}
+                className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 font-semibold text-indigo-300 hover:bg-white/10"
+              >
+                <Undo2 className="h-3.5 w-3.5" /> Undo
+              </button>
+            )}
           </div>
         </div>
       )}
     </ToastCtx.Provider>
   );
+}
+
+/** Ctrl/⌘+Z anywhere (outside text boxes): undo your last change. */
+function UndoShortcut({ onUndo }: { onUndo: (message: string, tone: "ok" | "error") => void }) {
+  useEffect(() => {
+    const on = async (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== "z") return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      e.preventDefault();
+      try {
+        const { items } = await api<{ items: { id: string; undoneAt: string | null }[] }>("/api/activity");
+        const last = items.find((i) => !i.undoneAt);
+        if (!last) return onUndo("Nothing to undo", "ok");
+        const r = await undoChanges([last.id]);
+        onUndo(r.ok ? `↩️ ${r.message}` : r.message, r.ok ? "ok" : "error");
+      } catch (err) {
+        onUndo((err as Error).message, "error");
+      }
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, [onUndo]);
+  return null;
 }

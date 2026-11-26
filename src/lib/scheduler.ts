@@ -245,17 +245,30 @@ async function maybeEscalate(d: Delivery, r: Reminder) {
 export type Via = "app" | "email" | "push" | "telegram";
 
 export async function completeOccurrence(reminderId: string, occurrenceAt: Date, via: Via = "app") {
-  await db().insert(completions).values({ reminderId, occurrenceAt }).onConflictDoNothing();
-  await cancelQueued(reminderId, occurrenceAt);
-  const [r] = await db().select().from(reminders).where(eq(reminders.id, reminderId));
-  if (r && !r.rrule) {
-    await db().update(reminders).set({ status: "done", updatedAt: new Date() }).where(eq(reminders.id, reminderId));
-  }
-  // e.g. a medicine dose lowers the tablet count.
-  if (r?.meta) await import("./life").then((m) => m.onReminderCompleted(r)).catch(() => null);
-  // Update the Telegram message and phone notification so every place shows it's done.
-  if (r) await import("./sync").then((m) => m.syncOccurrence(r, occurrenceAt, { state: "done", via })).catch(() => null);
-  return r;
+  const undo = await import("./undo");
+  return undo.recorded<typeof reminders.$inferSelect | undefined>(
+    {
+      title: (r) => (r ? `Done · ${r.title}` : null),
+      kind: "done",
+      ref: `done:${reminderId}:${occurrenceAt.toISOString()}`,
+    },
+    async (rec) => {
+      const [r] = await db().select().from(reminders).where(eq(reminders.id, reminderId));
+      const meta = r?.meta as { kind?: string; id?: string } | null;
+      // A medicine dose lowers the tablet count: remember it so Undo puts the tablet back.
+      if (meta?.kind === "medicine" && meta.id) rec(await undo.snap("medicines", [meta.id]));
+      const fresh = await db().insert(completions).values({ reminderId, occurrenceAt }).onConflictDoNothing().returning();
+      if (fresh.length) rec({ op: "uncomplete", reminderId, occurrenceAt: occurrenceAt.toISOString() });
+      await cancelQueued(reminderId, occurrenceAt);
+      if (r && !r.rrule) {
+        await db().update(reminders).set({ status: "done", updatedAt: new Date() }).where(eq(reminders.id, reminderId));
+      }
+      if (r?.meta && fresh.length) await import("./life").then((m) => m.onReminderCompleted(r)).catch(() => null);
+      // Update the Telegram message and phone notification so every place shows it's done.
+      if (r) await import("./sync").then((m) => m.syncOccurrence(r, occurrenceAt, { state: "done", via, undoId: undo.currentActivityId() })).catch(() => null);
+      return r;
+    },
+  );
 }
 
 export async function uncompleteOccurrence(reminderId: string, occurrenceAt: Date) {
@@ -266,11 +279,30 @@ export async function uncompleteOccurrence(reminderId: string, occurrenceAt: Dat
   if (r && !r.rrule && r.status === "done") {
     await db().update(reminders).set({ status: "active", updatedAt: new Date() }).where(eq(reminders.id, reminderId));
   }
+  await import("./undo").then((u) => u.markUndone(`done:${reminderId}:${occurrenceAt.toISOString()}`));
   // Undo: put the buttons back on the Telegram message.
   if (r) await import("./sync").then((m) => m.syncOccurrence(r, occurrenceAt, { state: "undone", via: "app" })).catch(() => null);
 }
 
 export async function snoozeOccurrence(reminderId: string, occurrenceAt: Date, minutes: number, via: Via = "app") {
+  const undo = await import("./undo");
+  let title = "";
+  return undo.recorded<Date | null>({ title: (until) => (until ? `Snoozed · ${title}` : null), kind: "snooze" }, async (rec) => {
+    const until = await snoozeInner(reminderId, occurrenceAt, minutes, via, (r, row) => {
+      title = r.title;
+      rec({ op: "unsnooze", reminderId, occurrenceAt: occurrenceAt.toISOString(), deliveryId: row.id });
+    });
+    return until;
+  });
+}
+
+async function snoozeInner(
+  reminderId: string,
+  occurrenceAt: Date,
+  minutes: number,
+  via: Via,
+  onQueued: (r: typeof reminders.$inferSelect, row: typeof deliveries.$inferSelect) => void,
+) {
   // Snoozing replaces any pending escalations for this occurrence.
   await db()
     .update(deliveries)
@@ -298,7 +330,9 @@ export async function snoozeOccurrence(reminderId: string, occurrenceAt: Date, m
     })
     .returning();
   await queueDelivery(row);
-  await import("./sync").then((m) => m.syncOccurrence(r, occurrenceAt, { state: "snoozed", until: alertAt, via })).catch(() => null);
+  onQueued(r, row);
+  const undoId = (await import("./undo")).currentActivityId();
+  await import("./sync").then((m) => m.syncOccurrence(r, occurrenceAt, { state: "snoozed", until: alertAt, via, undoId })).catch(() => null);
   return alertAt;
 }
 

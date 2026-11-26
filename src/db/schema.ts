@@ -354,3 +354,25 @@ export const listItems = pgTable(
 );
 export type Split = typeof splits.$inferSelect;
 export type Due = typeof dues.$inferSelect;
+
+/**
+ * Everything you did, newest first, with what's needed to put it back ("Undo").
+ * `ops` is a list of steps (restore a row, remove a row, un-tick a reminder…) run in order.
+ * Kept for 30 days.
+ */
+export const activity = pgTable(
+  "activity",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    kind: text("kind").notNull(),
+    via: text("via").notNull().default("app"),
+    ops: jsonb("ops").notNull(),
+    /** What it was about, e.g. "done:<reminderId>:<time>", so undoing it another way marks it undone here too. */
+    ref: text("ref"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    undoneAt: timestamp("undone_at", { withTimezone: true }),
+  },
+  (t) => [index("activity_created_idx").on(t.createdAt), index("activity_ref_idx").on(t.ref)],
+);
+export type Activity = typeof activity.$inferSelect;

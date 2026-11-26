@@ -1,5 +1,6 @@
 import { connection, NextResponse } from "next/server";
 import { deletePlace, listPlaceReminders, listPlaces, placeInputSchema, savePlace } from "@/lib/places";
+import { withUndo } from "@/lib/undo-route";
 
 /** Saved places + location reminders (one call for the Places screen and the location watcher). */
 export async function GET() {
@@ -8,15 +9,15 @@ export async function GET() {
   return NextResponse.json({ places, reminders });
 }
 
-export async function POST(req: Request) {
+export const POST = withUndo(async (req: Request) => {
   const p = placeInputSchema.safeParse(await req.json().catch(() => null));
   if (!p.success) return NextResponse.json({ error: "Name the place and allow location" }, { status: 400 });
   return NextResponse.json({ place: await savePlace(p.data) });
-}
+});
 
-export async function DELETE(req: Request) {
+export const DELETE = withUndo(async (req: Request) => {
   const id = new URL(req.url).searchParams.get("id");
   if (!id) return NextResponse.json({ error: "Which place?" }, { status: 400 });
   await deletePlace(id);
   return NextResponse.json({ ok: true });
-}
+});

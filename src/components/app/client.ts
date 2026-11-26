@@ -80,7 +80,46 @@ export async function api<T = unknown>(url: string, init?: RequestInit & { json?
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(data.error || `Request failed (${res.status})`);
+  // The server saved this change in History: remember it so the next toast can offer "Undo".
+  const undoId = res.headers.get("x-undo-id");
+  if (undoId) {
+    if (!capturePaused) recentUndos.push({ id: undoId, at: Date.now() });
+    if (data && typeof data === "object") (data as { undoId?: string }).undoId = undoId;
+  }
   return data as T;
+}
+
+// ------------------------------------------------------------- undo
+
+const recentUndos: { id: string; at: number }[] = [];
+let capturePaused = 0;
+
+/** Changes made in the last few seconds that a toast hasn't offered to undo yet. */
+export function takeRecentUndos(maxAgeMs = 6000) {
+  const now = Date.now();
+  const ids = recentUndos.filter((u) => now - u.at < maxAgeMs).map((u) => u.id);
+  recentUndos.length = 0;
+  return ids;
+}
+
+/** Run something without its changes being offered by the next toast (delayed deletes). */
+export async function withoutUndoCapture<T>(fn: () => Promise<T> | T) {
+  capturePaused++;
+  try {
+    return await fn();
+  } finally {
+    capturePaused--;
+  }
+}
+
+export type UndoResult = { ok: boolean; title: string; message: string };
+
+/** Undo one or more changes (newest first) and refresh every screen. */
+export async function undoChanges(ids: string[]): Promise<UndoResult> {
+  let last: UndoResult = { ok: true, title: "Undone", message: "Undone" };
+  for (const id of [...ids].reverse()) last = await api<UndoResult>(`/api/activity/${id}`, { method: "POST" });
+  refreshAll();
+  return ids.length > 1 ? { ...last, message: `Undid ${ids.length} changes` } : last;
 }
 
 const REFRESH = "remindo:refresh";

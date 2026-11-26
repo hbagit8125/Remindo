@@ -46,7 +46,7 @@ export async function listPlaceReminders() {
 }
 
 /** Save a place (replaces one with the same name). */
-export async function savePlace(input: z.infer<typeof placeInputSchema>) {
+async function savePlaceInner(input: z.infer<typeof placeInputSchema>) {
   const all = await listPlaces();
   const name = input.name.replace(/^\w/, (c) => c.toUpperCase());
   const existing = all.find((p) => norm(p.name) === norm(name));
@@ -54,27 +54,27 @@ export async function savePlace(input: z.infer<typeof placeInputSchema>) {
   await setSetting(P, [...all.filter((p) => p.id !== place.id), place]);
   return place;
 }
-export async function deletePlace(placeId: string) {
+async function deletePlaceInner(placeId: string) {
   await setSetting(
     P,
     (await listPlaces()).filter((p) => p.id !== placeId),
   );
 }
 
-export async function addPlaceReminders(items: PlaceReminderInput[], now = new Date()) {
+async function addPlaceRemindersInner(items: PlaceReminderInput[], now = new Date()) {
   const all = await listPlaceReminders();
   const added = items.map((i) => ({ ...i, place: i.place.replace(/^(the|my)\s+/i, ""), id: id(), active: true, createdAt: now.toISOString() }));
   await setSetting(R, [...all, ...added]);
   return added;
 }
-export async function updatePlaceReminder(rid: string, patch: Partial<Pick<PlaceReminder, "active" | "text" | "repeat" | "on" | "place">>) {
+async function updatePlaceReminderInner(rid: string, patch: Partial<Pick<PlaceReminder, "active" | "text" | "repeat" | "on" | "place">>) {
   const all = await listPlaceReminders();
   await setSetting(
     R,
     all.map((r) => (r.id === rid ? { ...r, ...patch } : r)),
   );
 }
-export async function deletePlaceReminder(rid: string) {
+async function deletePlaceReminderInner(rid: string) {
   await setSetting(
     R,
     (await listPlaceReminders()).filter((r) => r.id !== rid),
@@ -111,4 +111,33 @@ export function distanceM(a: { lat: number; lng: number }, b: { lat: number; lng
   const dLng = toRad(b.lng - a.lng);
   const s = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// ------------------------------------------------------------- undoable wrappers (places live in settings)
+
+async function withSnap<V>(key: string, title: string, fn: () => Promise<V>) {
+  const u = await import("./undo");
+  return u.recorded({ title, kind: "edit" }, async (rec) => {
+    rec(await u.snapSetting(key));
+    return fn();
+  });
+}
+export function savePlace(input: z.infer<typeof placeInputSchema>) {
+  return withSnap(P, `Saved place ${input.name}`, () => savePlaceInner(input));
+}
+export async function deletePlace(placeId: string) {
+  const p = (await listPlaces()).find((x) => x.id === placeId);
+  return withSnap(P, `Removed place ${p?.name || ""}`.trim(), () => deletePlaceInner(placeId));
+}
+export function addPlaceReminders(items: PlaceReminderInput[], now = new Date()) {
+  return withSnap(R, items.length === 1 ? `Added “${items[0].text}” at ${items[0].place}` : `Added ${items.length} place reminders`, () => addPlaceRemindersInner(items, now));
+}
+export async function updatePlaceReminder(rid: string, patch: Partial<Pick<PlaceReminder, "active" | "text" | "repeat" | "on" | "place">>) {
+  const r = (await listPlaceReminders()).find((x) => x.id === rid);
+  const title = patch.active === false ? `${r?.repeat ? "Paused" : "Done"} · ${r?.text}` : patch.active === true ? `Turned on · ${r?.text}` : `Edited “${r?.text}”`;
+  return withSnap(R, title, () => updatePlaceReminderInner(rid, patch));
+}
+export async function deletePlaceReminder(rid: string) {
+  const r = (await listPlaceReminders()).find((x) => x.id === rid);
+  return withSnap(R, `Deleted “${r?.text || "place reminder"}”`, () => deletePlaceReminderInner(rid));
 }
