@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { clsx } from "clsx";
 import {
@@ -13,17 +13,20 @@ import {
   GraduationCap,
   ListChecks,
   MapPin,
-  Pencil,
   Pill,
   Pin,
+  PinOff,
   Plus,
+  RefreshCw,
+  Send,
   Trash2,
   Users,
 } from "lucide-react";
-import { api, refreshAll, relativeDay, useData } from "@/components/app/client";
-import { Empty, PageTitle, Section, SkeletonList } from "@/components/app/rows";
-import { SwipeRow } from "@/components/app/SwipeRow";
-import { listShareText, ShareButton } from "@/components/app/Share";
+import { api, refreshAll, relativeDay, useData, useHidden } from "@/components/app/client";
+import { Empty, ItemRow, PageTitle, ReminderItem, rowIcon, Section, SkeletonList, useNow, useReminderActions, useUndoDelete } from "@/components/app/rows";
+import { SwipeHint } from "@/components/app/SwipeRow";
+import { listShareText, ShareButton, ShareSheet } from "@/components/app/Share";
+import type { AgendaItem } from "@/components/types";
 import { useToast } from "@/components/app/toast";
 import { field, label } from "@/components/app/ReminderEditor";
 import { Modal, ghostBtn, primaryBtn, useSubmit } from "@/components/screens/MoneyPlus";
@@ -135,7 +138,9 @@ export function DocumentsScreen() {
   const { data, loading } = useData<{ documents: Doc[] }>("/api/documents");
   const [editing, setEditing] = useState<Partial<Doc> | null>(null);
   const [renewing, setRenewing] = useState<Doc | null>(null);
-  const docs = data?.documents || [];
+  const hidden = useHidden();
+  const del = useUndoDelete();
+  const docs = (data?.documents || []).filter((d) => !hidden.has(d.id));
   return (
     <div>
       <Back />
@@ -150,32 +155,35 @@ export function DocumentsScreen() {
           action={<button data-submit className={primaryBtn} onClick={() => setEditing({ kind: "vehicle_insurance" })}>Add a document</button>}
         />
       ) : (
-        <div className="card divide-y divide-line overflow-hidden rounded-3xl">
-          {docs.map((d) => {
-            const left = daysTo(d.expiryDate);
-            return (
-              <div key={d.id} className="flex items-center gap-3 px-4 py-3.5">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{d.name}</p>
-                  <p className="truncate text-xs text-muted">
-                    {DOC_LABEL[d.kind] || d.kind}
-                    {d.number ? ` · ${d.number}` : ""}
-                    {d.renewalCostPaise ? ` · ~${formatINR(d.renewalCostPaise)}` : ""}
-                  </p>
-                </div>
-                <Pill2 tone={left < 0 ? "red" : left <= 7 ? "red" : left <= 30 ? "amber" : "muted"}>
-                  {left < 0 ? `Expired ${-left}d ago` : left === 0 ? "Expires today" : left <= 60 ? `${left} days left` : `Exp ${d.expiryDate.slice(8)}/${d.expiryDate.slice(5, 7)}/${d.expiryDate.slice(2, 4)}`}
-                </Pill2>
-                <button onClick={() => setRenewing(d)} className="rounded-lg px-2 py-1 text-xs font-medium text-indigo-500 hover:bg-raised">
-                  Renewed
-                </button>
-                <button onClick={() => setEditing(d)} className="rounded-lg p-2 text-subtle hover:text-fg" aria-label="Edit">
-                  <Pencil className="h-4 w-4" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
+        <>
+          <SwipeHint text="Tip: swipe right when you've renewed something, left to delete it." />
+          <div className="grid gap-2">
+            {docs.map((d) => {
+              const left = daysTo(d.expiryDate);
+              return (
+                <ItemRow
+                  key={d.id}
+                  icon={rowIcon("bg-sky-500/15 text-lg", (DOC_LABEL[d.kind] || "📁").split(" ")[0])}
+                  title={d.name}
+                  sub={[(DOC_LABEL[d.kind] || d.kind).replace(/^\S+\s/, ""), d.number, d.renewalCostPaise && `~${formatINR(d.renewalCostPaise)}`].filter(Boolean).join(" · ")}
+                  badge={
+                    <Pill2 tone={left <= 7 ? "red" : left <= 30 ? "amber" : "muted"}>
+                      {left < 0 ? "Expired" : left === 0 ? "Today" : left <= 60 ? `${left}d left` : `${MONTHS[Number(d.expiryDate.slice(5, 7)) - 1]} '${d.expiryDate.slice(2, 4)}`}
+                    </Pill2>
+                  }
+                  actions={
+                    <button onClick={() => setRenewing(d)} className="rounded-lg px-2 py-1 text-xs font-medium text-indigo-500 hover:bg-raised">
+                      Renewed
+                    </button>
+                  }
+                  onOpen={() => setEditing(d)}
+                  swipeRight={{ label: "Renewed", icon: <RefreshCw className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => setRenewing(d) }}
+                  swipeLeft={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => del(d.id, `“${d.name}” deleted`, `/api/documents/${d.id}`) }}
+                />
+              );
+            })}
+          </div>
+        </>
       )}
       {editing && <DocForm initial={editing} onClose={() => setEditing(null)} />}
       {renewing && <RenewForm doc={renewing} onClose={() => setRenewing(null)} />}
@@ -300,10 +308,19 @@ function RenewForm({ doc, onClose }: { doc: Doc; onClose: () => void }) {
 
 // ------------------------------------------------------------- People
 
+const wishText = (p: Person) => {
+  const first = p.name.split(" ")[0];
+  if (p.daysToAnniversary !== null && p.daysToAnniversary <= 1 && !(p.daysToBirthday !== null && p.daysToBirthday <= 1)) return `Happy anniversary, ${first}! 💍 Wishing you many more happy years together.`;
+  return `Happy birthday, ${first}! 🎉${p.turning ? ` ${p.turning} looks great on you.` : ""} Have a wonderful year ahead.`;
+};
+
 export function PeopleScreen() {
   const { data, loading } = useData<{ people: Person[] }>("/api/people");
   const [editing, setEditing] = useState<Partial<Person> | null>(null);
-  const people = data?.people || [];
+  const [wishing, setWishing] = useState<Person | null>(null);
+  const hidden = useHidden();
+  const del = useUndoDelete();
+  const people = (data?.people || []).filter((p) => !hidden.has(p.id));
   const soon = (n: number | null) => n !== null && n <= 30;
   return (
     <div>
@@ -319,30 +336,38 @@ export function PeopleScreen() {
           action={<button data-submit className={primaryBtn} onClick={() => setEditing({})}>Add someone</button>}
         />
       ) : (
-        <div className="card divide-y divide-line overflow-hidden rounded-3xl">
-          {people.map((p) => (
-            <button key={p.id} onClick={() => setEditing(p)} className="flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-raised">
-              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-pink-500/15 font-semibold text-pink-500">{p.name[0]?.toUpperCase()}</span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-medium">
-                  {p.name}
-                  {p.relation ? <span className="font-normal text-muted"> · {p.relation}</span> : null}
-                </p>
-                <p className="truncate text-xs text-muted">
-                  {[p.birthday && `🎂 ${fmtMD(p.birthday)}${p.turning ? ` (turns ${p.turning})` : ""}`, p.anniversary && `💍 ${fmtMD(p.anniversary)}`, p.giftIdeas && `🎁 ${p.giftIdeas}`]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
-              </div>
-              {soon(p.daysToBirthday) ? (
-                <Pill2 tone={p.daysToBirthday! <= 7 ? "red" : "amber"}>{p.daysToBirthday === 0 ? "Today 🎉" : `🎂 in ${p.daysToBirthday}d`}</Pill2>
-              ) : soon(p.daysToAnniversary) ? (
-                <Pill2 tone="amber">{p.daysToAnniversary === 0 ? "Today 💍" : `💍 in ${p.daysToAnniversary}d`}</Pill2>
-              ) : null}
-            </button>
-          ))}
-        </div>
+        <>
+          <SwipeHint text="Tip: swipe right to send wishes, left to remove someone." />
+          <div className="grid gap-2">
+            {people.map((p) => (
+              <ItemRow
+                key={p.id}
+                icon={<span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-pink-500/15 font-semibold text-pink-500">{p.name[0]?.toUpperCase()}</span>}
+                title={
+                  <>
+                    {p.name}
+                    {p.relation ? <span className="font-normal text-muted"> · {p.relation}</span> : null}
+                  </>
+                }
+                sub={[p.birthday && `🎂 ${fmtMD(p.birthday)}${p.turning ? ` (turns ${p.turning})` : ""}`, p.anniversary && `💍 ${fmtMD(p.anniversary)}`, p.giftIdeas && `🎁 ${p.giftIdeas}`]
+                  .filter(Boolean)
+                  .join(" · ")}
+                badge={
+                  soon(p.daysToBirthday) ? (
+                    <Pill2 tone={p.daysToBirthday! <= 7 ? "red" : "amber"}>{p.daysToBirthday === 0 ? "Today 🎉" : `🎂 in ${p.daysToBirthday}d`}</Pill2>
+                  ) : soon(p.daysToAnniversary) ? (
+                    <Pill2 tone="amber">{p.daysToAnniversary === 0 ? "Today 💍" : `💍 in ${p.daysToAnniversary}d`}</Pill2>
+                  ) : null
+                }
+                onOpen={() => setEditing(p)}
+                swipeRight={{ label: "Send wishes", icon: <Send className="h-5 w-5" />, className: "bg-pink-500", onTrigger: () => setWishing(p) }}
+                swipeLeft={{ label: "Remove", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => del(p.id, `${p.name} removed`, `/api/people/${p.id}`) }}
+              />
+            ))}
+          </div>
+        </>
       )}
+      {wishing && <ShareSheet title={`Wish ${wishing.name}`} text={wishText(wishing)} onClose={() => setWishing(null)} />}
       {editing && <PersonForm initial={editing} onClose={() => setEditing(null)} />}
     </div>
   );
@@ -464,7 +489,15 @@ export function HealthScreen() {
   const { data, loading } = useData<{ medicines: Medicine[] }>("/api/medicines");
   const [editing, setEditing] = useState<Partial<Medicine> | null>(null);
   const [refilling, setRefilling] = useState<Medicine | null>(null);
-  const meds = data?.medicines || [];
+  const agenda = useData<{ items: AgendaItem[] }>("/api/agenda?days=1");
+  const now = useNow();
+  const hidden = useHidden();
+  const del = useUndoDelete();
+  const meds = (data?.medicines || []).filter((m) => !hidden.has(m.id));
+  const today = todayStr();
+  const doses = (agenda.data?.items || []).filter(
+    (i) => i.category === "health" && new Date(i.occurrenceAt).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) === today,
+  );
   return (
     <div>
       <Back />
@@ -479,36 +512,48 @@ export function HealthScreen() {
           action={<button data-submit className={primaryBtn} onClick={() => setEditing({ times: ["09:00"], perDose: 1, refillAt: 5 })}>Add medicine</button>}
         />
       ) : (
-        <div className="card divide-y divide-line overflow-hidden rounded-3xl">
-          {meds.map((m) => {
-            const days = m.stock !== null && m.times.length ? Math.floor(m.stock / (m.perDose * m.times.length)) : null;
-            return (
-              <div key={m.id} className="flex items-center gap-3 px-4 py-3.5">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-500/15 text-emerald-500">
-                  <Pill className="h-5 w-5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    {m.name}
-                    {m.dose ? <span className="font-normal text-muted"> · {m.dose}</span> : null}
-                  </p>
-                  <p className="truncate text-xs text-muted">{m.times.map((t) => to12(t)).join(", ")}</p>
-                </div>
-                {m.stock !== null && (
-                  <Pill2 tone={m.stock <= m.refillAt ? "red" : "muted"}>
-                    {m.stock} left{days !== null ? ` · ${days}d` : ""}
-                  </Pill2>
-                )}
-                <button onClick={() => setRefilling(m)} className="rounded-lg px-2 py-1 text-xs font-medium text-indigo-500 hover:bg-raised">
-                  Refill
-                </button>
-                <button onClick={() => setEditing(m)} className="rounded-lg p-2 text-subtle hover:text-fg" aria-label="Edit">
-                  <Pencil className="h-4 w-4" />
-                </button>
+        <>
+          {doses.length > 0 && (
+            <Section title={`Today's doses · ${doses.filter((d) => d.done).length}/${doses.length} taken`}>
+              <div className="grid gap-2">
+                {doses.map((i) => (
+                  <ReminderItem key={`${i.reminderId}-${i.occurrenceAt}`} i={i} now={now} />
+                ))}
               </div>
-            );
-          })}
-        </div>
+            </Section>
+          )}
+          <Section title="Medicines">
+            <SwipeHint text="Tip: tick a dose when you take it. Swipe a medicine right to refill, left to remove it." />
+            <div className="grid gap-2">
+              {meds.map((m) => {
+                const days = m.stock !== null && m.times.length ? Math.floor(m.stock / (m.perDose * m.times.length)) : null;
+                return (
+                  <ItemRow
+                    key={m.id}
+                    icon={rowIcon("bg-emerald-500/15 text-emerald-500", <Pill className="h-5 w-5" />)}
+                    title={m.name}
+                    sub={[m.dose, m.times.map((t) => to12(t)).join(", ")].filter(Boolean).join(" · ")}
+                    badge={
+                      m.stock !== null && (
+                        <Pill2 tone={m.stock <= m.refillAt ? "red" : "muted"}>
+                          {m.stock} left{days !== null ? ` · ${days}d` : ""}
+                        </Pill2>
+                      )
+                    }
+                    actions={
+                      <button onClick={() => setRefilling(m)} className="rounded-lg px-2 py-1 text-xs font-medium text-indigo-500 hover:bg-raised">
+                        Refill
+                      </button>
+                    }
+                    onOpen={() => setEditing(m)}
+                    swipeRight={{ label: "Refill", icon: <Plus className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => setRefilling(m) }}
+                    swipeLeft={{ label: "Remove", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => del(m.id, `${m.name} removed`, `/api/medicines/${m.id}`) }}
+                  />
+                );
+              })}
+            </div>
+          </Section>
+        </>
       )}
       <p className="mt-4 px-1 text-xs text-muted">Reminders only. Follow your doctor&apos;s advice for doses.</p>
       {editing && <MedicineForm initial={editing} onClose={() => setEditing(null)} />}
@@ -627,7 +672,17 @@ function RefillForm({ med, onClose }: { med: Medicine; onClose: () => void }) {
 export function StudyScreen() {
   const { data, loading } = useData<{ reminders: StudyItem[] }>("/api/reminders?category=study");
   const [open, setOpen] = useState(false);
-  const items = (data?.reminders || []).filter((r) => r.status === "active").sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+  const hidden = useHidden();
+  const del = useUndoDelete();
+  const ra = useReminderActions();
+  const { toast } = useToast();
+  const items = (data?.reminders || []).filter((r) => r.status === "active" && !hidden.has(r.id)).sort((a, b) => a.dueAt.localeCompare(b.dueAt));
+  const occ = (r: StudyItem, action: "done" | "undo") => api("/api/occurrence", { method: "POST", json: { reminderId: r.id, occurrenceAt: r.dueAt, action } });
+  const finish = async (r: StudyItem) => {
+    await occ(r, "done");
+    refreshAll();
+    toast({ message: `“${r.title}” finished 🎉`, action: { label: "Undo", onClick: () => occ(r, "undo").then(refreshAll) } });
+  };
   return (
     <div>
       <Back />
@@ -642,32 +697,27 @@ export function StudyScreen() {
           action={<button data-submit className={primaryBtn} onClick={() => setOpen(true)}>Add a deadline</button>}
         />
       ) : (
-        <div className="card divide-y divide-line overflow-hidden rounded-3xl">
-          {items.map((r) => {
-            const date = r.input?.date || new Date(r.dueAt).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
-            const left = date ? daysTo(date) : null;
-            return (
-              <div key={r.id} className="flex items-center gap-3 px-4 py-3.5">
-                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-violet-500/15 text-violet-500">
-                  <GraduationCap className="h-5 w-5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{r.title}</p>
-                  <p className="truncate text-xs text-muted">{[date && relativeDay(date), r.notes].filter(Boolean).join(" · ")}</p>
-                </div>
-                {left !== null && <Pill2 tone={left <= 1 ? "red" : left <= 7 ? "amber" : "muted"}>{left <= 0 ? "Today" : `${left}d`}</Pill2>}
-                <button
-                  onClick={() => api(`/api/reminders/${r.id}`, { method: "DELETE" }).then(refreshAll)}
-                  className="rounded-lg p-2 text-subtle hover:text-emerald-500"
-                  aria-label="Finished"
-                  title="Finished"
-                >
-                  <Check className="h-4 w-4" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
+        <>
+          <SwipeHint text="Tip: tick it or swipe right when it's finished, swipe left to delete." />
+          <div className="grid gap-2">
+            {items.map((r) => {
+              const date = r.input?.date || new Date(r.dueAt).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+              const left = date ? daysTo(date) : null;
+              return (
+                <ItemRow
+                  key={r.id}
+                  check={{ done: false, onToggle: () => finish(r), label: "Finished" }}
+                  title={r.title}
+                  sub={[date && relativeDay(date), r.notes].filter(Boolean).join(" · ")}
+                  badge={left !== null && <Pill2 tone={left <= 1 ? "red" : left <= 7 ? "amber" : "muted"}>{left < 0 ? `${-left}d late` : left === 0 ? "Today" : `${left}d`}</Pill2>}
+                  onOpen={() => ra.edit(r.id)}
+                  swipeRight={{ label: "Finished", icon: <Check className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => finish(r) }}
+                  swipeLeft={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => del(r.id, `“${r.title}” deleted`, `/api/reminders/${r.id}`) }}
+                />
+              );
+            })}
+          </div>
+        </>
       )}
       {open && <StudyForm onClose={() => setOpen(false)} />}
     </div>
@@ -743,7 +793,10 @@ function StudyForm({ onClose }: { onClose: () => void }) {
 export function ListsScreen() {
   const { data, loading } = useData<{ lists: ListSummary[] }>("/api/lists");
   const [creating, setCreating] = useState<"list" | "note" | null>(null);
-  const all = data?.lists || [];
+  const router = useRouter();
+  const hidden = useHidden();
+  const del = useUndoDelete();
+  const all = (data?.lists || []).filter((l) => !hidden.has(l.id));
   return (
     <div>
       <Back />
@@ -766,18 +819,39 @@ export function ListsScreen() {
           action={<button data-submit className={primaryBtn} onClick={() => setCreating("list")}>New list</button>}
         />
       ) : (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-          {all.map((l) => (
-            <Link key={l.id} href={`/lists?id=${l.id}`} className="card relative flex min-h-28 flex-col rounded-2xl p-4 transition hover:bg-raised">
-              {l.pinned && <Pin className="absolute right-3 top-3 h-3.5 w-3.5 text-subtle" />}
-              <span className="text-2xl">{l.emoji || (l.kind === "note" ? "🗒️" : "📝")}</span>
-              <span className="mt-2 truncate font-medium">{l.name}</span>
-              <span className="mt-auto line-clamp-2 text-xs text-muted">
-                {l.kind === "list" ? (l.total ? `${l.open} to get · ${l.total - l.open} done` : "Empty") : l.body?.slice(0, 80) || "Empty note"}
-              </span>
-            </Link>
-          ))}
-        </div>
+        <>
+          <SwipeHint text="Tip: swipe a list right to pin it to the top, left to delete it." />
+          <div className="grid gap-2">
+            {all.map((l) => (
+              <ItemRow
+                key={l.id}
+                icon={rowIcon("bg-teal-500/15 text-xl", l.emoji || (l.kind === "note" ? "🗒️" : "📝"))}
+                title={
+                  <>
+                    {l.name}
+                    {l.pinned && <Pin className="ml-1.5 inline h-3 w-3 text-subtle" />}
+                  </>
+                }
+                sub={l.kind === "list" ? (l.total ? `${l.open} left · ${l.total - l.open} done` : "Empty list") : l.body?.slice(0, 80) || "Empty note"}
+                badge={
+                  l.kind === "list" && l.total > 0 ? (
+                    <span className="h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-raised">
+                      <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${Math.round(((l.total - l.open) / l.total) * 100)}%` }} />
+                    </span>
+                  ) : null
+                }
+                onOpen={() => router.push(`/lists?id=${l.id}`)}
+                swipeRight={{
+                  label: l.pinned ? "Unpin" : "Pin",
+                  icon: l.pinned ? <PinOff className="h-5 w-5" /> : <Pin className="h-5 w-5" />,
+                  className: "bg-indigo-500",
+                  onTrigger: () => api(`/api/lists/${l.id}`, { method: "PATCH", json: { pinned: !l.pinned } }).then(refreshAll),
+                }}
+                swipeLeft={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => del(l.id, `“${l.name}” deleted`, `/api/lists/${l.id}`) }}
+              />
+            ))}
+          </div>
+        </>
       )}
       {creating && <NewListForm kind={creating} onClose={() => setCreating(null)} />}
     </div>
@@ -844,14 +918,21 @@ export function ListDetailScreen({ id }: { id: string }) {
     await api(`/api/lists/${id}/items`, { method: "POST", json: { items } }).catch((e) => toast({ message: e.message, tone: "error" }));
     reload();
   };
+  const hidden = useHidden();
+  const del = useUndoDelete();
+  // Tick instantly; the server catches up.
+  const [flip, setFlip] = useState<Record<string, boolean>>({});
   const toggle = async (it: ListItem) => {
+    setFlip((f) => ({ ...f, [it.id]: !it.done }));
     await api(`/api/list-items/${it.id}`, { method: "PATCH", json: { done: !it.done } });
-    reload();
+    await reload();
+    setFlip((f) => {
+      const n = { ...f };
+      delete n[it.id];
+      return n;
+    });
   };
-  const remove = async (it: ListItem) => {
-    await api(`/api/list-items/${it.id}`, { method: "DELETE" });
-    reload();
-  };
+  const remove = (it: ListItem) => del(it.id, `“${it.text}” removed`, `/api/list-items/${it.id}`, reload);
   const saveBody = async () => {
     if (body === null) return;
     await api(`/api/lists/${id}`, { method: "PATCH", json: { body } });
@@ -867,8 +948,9 @@ export function ListDetailScreen({ id }: { id: string }) {
       </div>
     );
   }
-  const open = l.items.filter((i) => !i.done);
-  const done = l.items.filter((i) => i.done);
+  const items = l.items.filter((i) => !hidden.has(i.id)).map((i) => (i.id in flip ? { ...i, done: flip[i.id] } : i));
+  const open = items.filter((i) => !i.done);
+  const done = items.filter((i) => i.done);
   return (
     <div>
       <Back href="/lists" text="Notes & lists" />
@@ -930,30 +1012,31 @@ export function ListDetailScreen({ id }: { id: string }) {
           {!l.items.length ? (
             <p className="px-1 text-sm text-muted">Nothing here yet.</p>
           ) : (
-            <div className="card divide-y divide-line overflow-hidden rounded-3xl">
-              {[...open, ...done].map((it) => (
-                <SwipeRow
-                  key={it.id}
-                  className="rounded-none"
-                  right={{ label: it.done ? "Untick" : "Tick", icon: <Check className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => toggle(it) }}
-                  left={{ label: "Remove", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => remove(it) }}
-                >
-                <div className="group flex items-center gap-3 bg-surface px-4 py-3">
-                  <button
-                    onClick={() => toggle(it)}
-                    className={clsx("grid h-6 w-6 shrink-0 place-items-center rounded-md border-2 transition", it.done ? "border-emerald-500 bg-emerald-500 text-white" : "border-line")}
-                    aria-label={it.done ? "Untick" : "Tick"}
-                  >
-                    {it.done && <Check className="h-3.5 w-3.5" />}
-                  </button>
-                  <span className={clsx("flex-1 text-[15px]", it.done && "text-subtle line-through")}>{it.text}</span>
-                  <button onClick={() => remove(it)} className="p-1 text-subtle opacity-60 hover:text-rose-500 group-hover:opacity-100" aria-label="Remove">
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-                </SwipeRow>
-              ))}
-            </div>
+            <>
+              <div className="mb-3 flex items-center gap-3 px-1 text-xs text-muted">
+                <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-raised">
+                  <span className="block h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${Math.round((done.length / Math.max(1, items.length)) * 100)}%` }} />
+                </span>
+                {done.length}/{items.length} done
+              </div>
+              <div className="grid gap-2">
+                {[...open, ...done].map((it) => (
+                  <ItemRow
+                    key={it.id}
+                    check={{ done: it.done, onToggle: () => toggle(it), label: it.done ? "Untick" : "Tick", square: true }}
+                    title={it.text}
+                    done={it.done}
+                    swipeRight={{ label: it.done ? "Untick" : "Tick", icon: <Check className="h-5 w-5" />, className: "bg-emerald-500", onTrigger: () => toggle(it) }}
+                    swipeLeft={{ label: "Remove", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => remove(it) }}
+                    actions={
+                      <button onClick={() => remove(it)} className="hidden p-1.5 text-subtle hover:text-rose-500 sm:block" aria-label="Remove">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    }
+                  />
+                ))}
+              </div>
+            </>
           )}
           {done.length > 0 && (
             <button className="mt-3 px-1 text-sm text-muted hover:text-fg" onClick={() => api(`/api/lists/${id}/items`, { method: "DELETE" }).then(reload)}>

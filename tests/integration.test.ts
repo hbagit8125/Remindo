@@ -702,7 +702,7 @@ async function main() {
 
   // ---------------------------------------------------------------- Done in one place → updated everywhere
   const [syncR] = await createReminders([
-    { title: "QA sync bill", date: local(60 * 24 * 2).date, time: "10:00", recurrence: "none", interval: 1, priority: "high", category: "bills" }, // high: not held by quiet hours
+    { title: "QA sync bill", date: local(60 * 24).date, time: "10:00", recurrence: "none", interval: 1, priority: "high", category: "bills" }, // high: not held by quiet hours
   ]);
   const [syncRow] = await db().select().from(reminders).where(eq(reminders.id, syncR.id));
   const [syncDl] = await db()

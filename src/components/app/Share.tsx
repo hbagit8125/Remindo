@@ -23,7 +23,7 @@ export function ShareButton({ text, title, label = "Share", className }: { text:
   );
 }
 
-function ShareSheet({ text, title, onClose }: { text: string; title: string; onClose: () => void }) {
+export function ShareSheet({ text, title, onClose }: { text: string; title: string; onClose: () => void }) {
   const { toast } = useToast();
   const [msg, setMsg] = useState(text);
   const enc = encodeURIComponent(msg);

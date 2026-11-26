@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { clsx } from "clsx";
-import { Crosshair, MapPin, Plus, Trash2 } from "lucide-react";
-import { api, refreshAll, useData } from "@/components/app/client";
-import { Empty, PageTitle, Section, SkeletonList } from "@/components/app/rows";
+import { Check, Crosshair, MapPin, Pause, Play, Plus, Trash2 } from "lucide-react";
+import { api, refreshAll, useData, useHidden } from "@/components/app/client";
+import { Empty, ItemRow, PageTitle, rowIcon, Section, SkeletonList, useUndoDelete } from "@/components/app/rows";
+import { SwipeHint } from "@/components/app/SwipeRow";
 import { useToast } from "@/components/app/toast";
 import { field, label } from "@/components/app/ReminderEditor";
 import { Modal, primaryBtn, useSubmit } from "@/components/screens/MoneyPlus";
@@ -32,8 +33,15 @@ export function PlacesScreen() {
       .catch(() => null);
   }, []);
 
-  const places = data?.places || [];
-  const reminders = data?.reminders || [];
+  const hidden = useHidden();
+  const del = useUndoDelete();
+  const places = (data?.places || []).filter((p) => !hidden.has(p.id));
+  const reminders = (data?.reminders || []).filter((r) => !hidden.has(r.id));
+  const setActive = (r: PR, active: boolean) =>
+    call(
+      () => api(`/api/place-reminders/${r.id}`, { method: "PATCH", json: { active } }),
+      active ? "Turned back on" : r.repeat ? "Paused" : `“${r.text}” done`,
+    );
   const call = async (fn: () => Promise<unknown>, msg: string) => {
     try {
       await fn();
@@ -88,34 +96,49 @@ export function PlacesScreen() {
                 }
               />
             ) : (
-              <div className="card divide-y divide-line overflow-hidden rounded-2xl">
-                {reminders.map((r) => {
-                  const known = places.some((p) => norm(p.name) === norm(r.place));
-                  return (
-                    <div key={r.id} className={clsx("flex items-center gap-3 px-4 py-3", !r.active && "opacity-50")}>
-                      <MapPin className="h-5 w-5 shrink-0 text-indigo-500" />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium">{r.text}</p>
-                        <p className="truncate text-xs text-muted">
-                          {r.on === "arrive" ? "When I reach" : "When I leave"} {r.place}
-                          {r.repeat ? " · every time" : " · once"}
-                          {!known && <span className="text-amber-600"> · save this place below</span>}
-                          {!r.active && r.lastFiredAt && " · done"}
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => call(() => api(`/api/place-reminders/${r.id}`, { method: "PATCH", json: { active: !r.active } }), r.active ? "Paused" : "Turned on")}
-                        className="rounded-lg px-2 py-1 text-xs font-medium text-indigo-500 hover:bg-raised"
-                      >
-                        {r.active ? "Pause" : "Turn on"}
-                      </button>
-                      <button onClick={() => call(() => api(`/api/place-reminders/${r.id}`, { method: "DELETE" }), "Deleted")} className="p-1.5 text-subtle hover:text-rose-500" aria-label="Delete">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+              <>
+                <SwipeHint text="Tip: tick a place reminder when it's done, swipe left to delete it." />
+                <div className="grid gap-2">
+                  {reminders.map((r) => {
+                    const known = places.some((p) => norm(p.name) === norm(r.place));
+                    const finished = !r.active && Boolean(r.lastFiredAt) && !r.repeat;
+                    return (
+                      <ItemRow
+                        key={r.id}
+                        check={{ done: !r.active, onToggle: () => setActive(r, !r.active), label: r.active ? "Mark done" : "Turn back on" }}
+                        title={r.text}
+                        done={finished}
+                        dim={!r.active && !finished}
+                        sub={
+                          <>
+                            📍 {r.on === "arrive" ? "When I reach" : "When I leave"} {r.place}
+                            {r.repeat ? " · every time" : " · once"}
+                            {!known && <span className="text-amber-600"> · save this place below</span>}
+                            {!r.active && (finished ? " · done" : " · paused")}
+                          </>
+                        }
+                        actions={
+                          r.repeat && (
+                            <button
+                              onClick={() => setActive(r, !r.active)}
+                              className="grid h-9 w-9 place-items-center rounded-lg text-subtle hover:bg-raised hover:text-fg"
+                              aria-label={r.active ? "Pause" : "Turn on"}
+                            >
+                              {r.active ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                            </button>
+                          )
+                        }
+                        swipeRight={
+                          r.active
+                            ? { label: r.repeat ? "Pause" : "Done", icon: r.repeat ? <Pause className="h-5 w-5" /> : <Check className="h-5 w-5" />, className: r.repeat ? "bg-amber-500" : "bg-emerald-500", onTrigger: () => setActive(r, false) }
+                            : { label: "Turn on", icon: <Play className="h-5 w-5" />, className: "bg-indigo-500", onTrigger: () => setActive(r, true) }
+                        }
+                        swipeLeft={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => del(r.id, `“${r.text}” deleted`, `/api/place-reminders/${r.id}`) }}
+                      />
+                    );
+                  })}
+                </div>
+              </>
             )}
           </Section>
 
@@ -132,28 +155,25 @@ export function PlacesScreen() {
                 Go to a place (office, home, gym…) and <span className="text-indigo-500">save it here</span>.
               </button>
             ) : (
-              <div className="card divide-y divide-line overflow-hidden rounded-2xl">
+              <div className="grid gap-2">
                 {places.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3 px-4 py-3">
-                    <span className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-500/15 text-indigo-500">
-                      <MapPin className="h-4 w-4" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium">{p.name}</p>
-                      <p className="text-xs text-muted">Within {p.radius} m</p>
-                    </div>
-                    <a
-                      href={`https://www.google.com/maps?q=${p.lat},${p.lng}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="rounded-lg px-2 py-1 text-xs text-muted hover:bg-raised hover:text-fg"
-                    >
-                      Map
-                    </a>
-                    <button onClick={() => call(() => api(`/api/places?id=${p.id}`, { method: "DELETE" }), "Place removed")} className="p-1.5 text-subtle hover:text-rose-500" aria-label={`Remove ${p.name}`}>
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
+                  <ItemRow
+                    key={p.id}
+                    icon={rowIcon("bg-indigo-500/15 text-indigo-500", <MapPin className="h-4 w-4" />)}
+                    title={p.name}
+                    sub={`Within ${p.radius} m`}
+                    actions={
+                      <a
+                        href={`https://www.google.com/maps?q=${p.lat},${p.lng}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-lg px-2 py-1 text-xs text-muted hover:bg-raised hover:text-fg"
+                      >
+                        Map
+                      </a>
+                    }
+                    swipeLeft={{ label: "Remove", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => del(p.id, `${p.name} removed`, `/api/places?id=${p.id}`) }}
+                  />
                 ))}
               </div>
             )}
