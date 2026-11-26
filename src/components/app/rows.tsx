@@ -487,3 +487,99 @@ export function QuickTask({ focus = true, placeholder = "Add a task for today…
     </form>
   );
 }
+
+// ------------------------------------------------------------- shared row look (Home style) for every list
+
+/** The round tick used on Home. Same look everywhere. */
+export function CheckCircle({ done, onToggle, label, square }: { done: boolean; onToggle: () => void; label?: string; /** Tasks and checklist items use the square box, reminders the circle. */ square?: boolean }) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      aria-label={label || (done ? "Undo" : "Mark done")}
+      className={clsx(
+        "grid shrink-0 place-items-center border-2 transition active:scale-90",
+        square ? "h-6 w-6 rounded-md" : "h-7 w-7 rounded-full",
+        done ? "border-emerald-500 bg-emerald-500 text-white" : "border-[var(--subtle)] hover:border-emerald-500 hover:bg-emerald-500/10",
+      )}
+    >
+      {done && <Check className={square ? "h-3.5 w-3.5" : "h-4 w-4"} strokeWidth={3} />}
+    </button>
+  );
+}
+
+type SwipeAction = { label: string; icon: React.ReactNode; className: string; onTrigger: () => void };
+
+/**
+ * One card row, the same as reminders on Home: a tick (or icon) on the left, title and details,
+ * a badge and small buttons on the right. Swipe right / left for the two main actions on phones.
+ */
+export function ItemRow({
+  check,
+  icon,
+  title,
+  sub,
+  badge,
+  actions,
+  onOpen,
+  swipeRight,
+  swipeLeft,
+  done,
+  dim,
+}: {
+  check?: { done: boolean; onToggle: () => void; label?: string; square?: boolean };
+  icon?: React.ReactNode;
+  title: React.ReactNode;
+  sub?: React.ReactNode;
+  badge?: React.ReactNode;
+  actions?: React.ReactNode;
+  onOpen?: () => void;
+  swipeRight?: SwipeAction;
+  swipeLeft?: SwipeAction;
+  done?: boolean;
+  dim?: boolean;
+}) {
+  const body = (
+    <>
+      <p className={clsx("truncate font-medium", done && "text-subtle line-through")}>{title}</p>
+      {sub && <div className="mt-0.5 truncate text-xs text-muted">{sub}</div>}
+    </>
+  );
+  return (
+    <SwipeRow right={swipeRight} left={swipeLeft}>
+      <div className={clsx("card flex items-center gap-3 rounded-2xl px-3.5 py-3 transition hover:bg-raised", (done || dim) && "opacity-60")}>
+        {check ? <CheckCircle {...check} /> : icon}
+        {onOpen ? (
+          <button onClick={onOpen} className="min-w-0 flex-1 text-left">
+            {body}
+          </button>
+        ) : (
+          <div className="min-w-0 flex-1">{body}</div>
+        )}
+        {badge}
+        {actions && <div className="flex shrink-0 items-center">{actions}</div>}
+      </div>
+    </SwipeRow>
+  );
+}
+
+/** Hide right away, delete after the Undo window. Lists must filter with useHidden(). */
+export function useUndoDelete() {
+  const { undoable } = useToast();
+  return (id: string, message: string, url: string, after?: () => void) => {
+    hideId(id);
+    undoable(
+      message,
+      () =>
+        api(url, { method: "DELETE" }).then(() => {
+          refreshAll();
+          after?.();
+        }),
+      () => unhideId(id),
+    );
+  };
+}
+
+export const rowIcon = (tint: string, node: React.ReactNode) => <span className={clsx("grid h-10 w-10 shrink-0 place-items-center rounded-xl", tint)}>{node}</span>;
