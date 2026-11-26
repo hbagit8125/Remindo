@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { completeOccurrence, planAndQueue, snoozeOccurrence, uncompleteOccurrence } from "@/lib/scheduler";
 import { logReminderPayment, paidOccurrences } from "@/lib/finance";
+import { withUndo } from "@/lib/undo-route";
 
 const schema = z.object({
   reminderId: z.string().uuid(),
@@ -11,7 +12,7 @@ const schema = z.object({
 });
 
 /** Done / undo / snooze for one occurrence, from the dashboard. */
-export async function POST(req: Request) {
+export const POST = withUndo(async (req: Request) => {
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
   const { reminderId, action, minutes } = parsed.data;
@@ -38,4 +39,4 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, snoozedUntil: until });
   }
   return NextResponse.json({ ok: true });
-}
+});

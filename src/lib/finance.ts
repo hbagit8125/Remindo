@@ -152,11 +152,14 @@ export async function logReminderPayment(reminderId: string, occurrenceAt: Date)
     .from(transactions)
     .where(and(eq(transactions.reminderId, reminderId), eq(transactions.occurrenceAt, occurrenceAt)));
   if (existing) return { transaction: existing, already: true };
+  const { recorded, removed, money } = await import("./undo");
+  const amountPaise = r.amountPaise;
+  return recorded({ title: `Logged ${money(amountPaise)} paid · ${r.title}`, kind: "add" }, async (rec) => {
   const [tx] = await db()
     .insert(transactions)
     .values({
       type: "expense",
-      amountPaise: r.amountPaise,
+      amountPaise,
       category: guessCategoryFromReminder(r.title, r.category),
       note: r.title,
       date: today(),
@@ -164,8 +167,10 @@ export async function logReminderPayment(reminderId: string, occurrenceAt: Date)
       occurrenceAt,
     })
     .returning();
+  rec(removed("transactions", [tx.id]));
   await checkBudgetAlerts([monthOf(tx.date)]);
   return { transaction: tx, already: false };
+  });
 }
 
 function guessCategoryFromReminder(title: string, category: string | null) {

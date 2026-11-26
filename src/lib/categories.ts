@@ -47,7 +47,7 @@ export const categoryInputSchema = z.object({
 const exists = (s: Stored, n: string) =>
   [...DEFAULT_CATEGORIES, ...INCOME_CATEGORIES, ...s.custom.map((c) => c.name)].some((c) => c.toLowerCase() === n.toLowerCase());
 
-export async function addCategory(raw: z.input<typeof categoryInputSchema>) {
+async function addCategoryInner(raw: z.input<typeof categoryInputSchema>) {
   const input = categoryInputSchema.parse(raw);
   const s = await load();
   if (exists(s, input.name)) {
@@ -64,7 +64,7 @@ export async function addCategory(raw: z.input<typeof categoryInputSchema>) {
 }
 
 /** Rename and/or change the emoji of your own category. Past entries, budgets and favourites follow the new name. */
-export async function updateCategory(from: string, patch: { name?: string; emoji?: string }) {
+async function updateCategoryInner(from: string, patch: { name?: string; emoji?: string }) {
   const s = await load();
   const cur = s.custom.find((c) => c.name === from);
   if (!cur) throw new Error("Only your own categories can be renamed");
@@ -76,7 +76,7 @@ export async function updateCategory(from: string, patch: { name?: string; emoji
 }
 
 /** Delete your own category; its entries move to "Other". */
-export async function deleteCategory(n: string) {
+async function deleteCategoryInner(n: string) {
   const s = await load();
   if (!s.custom.some((c) => c.name === n)) throw new Error("Built-in categories can be hidden, not deleted");
   await setSetting(KEY, { ...s, custom: s.custom.filter((c) => c.name !== n) });
@@ -85,7 +85,7 @@ export async function deleteCategory(n: string) {
 }
 
 /** Hide or show a built-in category in the picker. Old entries keep it. */
-export async function setHidden(n: string, hidden: boolean) {
+async function setHiddenInner(n: string, hidden: boolean) {
   if (RESERVED.has(n)) throw new Error(`"${n}" can't be hidden`);
   const s = await load();
   const next = hidden ? [...new Set([...s.hidden, n])] : s.hidden.filter((h) => h !== n);
@@ -124,4 +124,33 @@ export async function normalizeCategory(raw: string | null | undefined, type: "e
   const known = [...DEFAULT_CATEGORIES, ...INCOME_CATEGORIES, ...s.custom.map((c) => c.name), "Refund"];
   const clean = (raw || "").replace(/^\s*(expenses?|income|category)\s*:\s*/i, "").trim();
   return known.find((k) => k.toLowerCase() === clean.toLowerCase()) || "Other";
+}
+
+// ------------------------------------------------------------- undoable wrappers
+
+/** Categories touch settings, and on rename/delete also entries, budgets and favourites. */
+async function withCategorySnap<V>(title: string, moving: string | null, fn: () => Promise<V>) {
+  const u = await import("./undo");
+  return u.recorded({ title, kind: "edit" }, async (rec) => {
+    rec(await u.snapSetting(KEY));
+    if (moving) {
+      const tx = await db().select({ id: transactions.id }).from(transactions).where(eq(transactions.category, moving));
+      rec(await u.snap("transactions", tx.map((t) => t.id)));
+      rec(await u.snapAll("budgets"));
+      rec(await u.snapAll("favourites"));
+    }
+    return fn();
+  });
+}
+export function addCategory(raw: z.input<typeof categoryInputSchema>) {
+  return withCategorySnap(`Added category ${String((raw as { name?: string }).name || "")}`.trim(), null, () => addCategoryInner(raw));
+}
+export function updateCategory(from: string, patch: { name?: string; emoji?: string }) {
+  return withCategorySnap(patch.name && patch.name !== from ? `Renamed ${from} → ${patch.name}` : `Edited category ${from}`, patch.name && patch.name !== from ? from : null, () => updateCategoryInner(from, patch));
+}
+export function deleteCategory(n: string) {
+  return withCategorySnap(`Deleted category ${n}`, n, () => deleteCategoryInner(n));
+}
+export function setHidden(n: string, hidden: boolean) {
+  return withCategorySnap(`${hidden ? "Hid" : "Showed"} category ${n}`, null, () => setHiddenInner(n, hidden));
 }

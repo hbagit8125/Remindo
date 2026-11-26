@@ -12,6 +12,7 @@ import { getPrefs } from "@/lib/settings";
 export async function GET(req: Request) {
   if (!isCronAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const plan = await runJob("daily planning", () => planAndQueue());
+  await runJob("undo history clean-up", () => import("@/lib/undo").then((u) => u.pruneActivity()));
   const prefs = await getPrefs().catch(() => null);
   const digest = prefs?.emails.morning === false ? "off" : await runJob("morning digest", () => sendDailyDigest());
   return NextResponse.json({ plan, digest });

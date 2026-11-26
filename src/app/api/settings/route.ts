@@ -3,6 +3,8 @@ import { z } from "zod";
 import { count } from "drizzle-orm";
 import { db, pushSubscriptions } from "@/db";
 import { getPrefs, getTelegram, setSetting } from "@/lib/settings";
+import { withUndo } from "@/lib/undo-route";
+import { recorded, snapSetting } from "@/lib/undo";
 
 const time = z.string().regex(/^\d{2}:\d{2}$/);
 const prefsSchema = z.object({
@@ -34,9 +36,12 @@ export async function GET() {
   });
 }
 
-export async function PUT(req: Request) {
+export const PUT = withUndo(async (req: Request) => {
   const parsed = prefsSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
-  await setSetting("prefs", parsed.data);
+  await recorded({ title: "Changed notification settings", kind: "edit" }, async (rec) => {
+    rec(await snapSetting("prefs"));
+    await setSetting("prefs", parsed.data);
+  });
   return NextResponse.json({ prefs: parsed.data });
-}
+});

@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -719,7 +719,9 @@ async function main() {
   await S.completeOccurrence(syncR.id, syncRow.dueAt, "app");
   const syncEdit = tgCalls.slice(tgN).find((c) => c.method === "editMessageText");
   assert.ok(syncEdit && String(syncEdit.body.text).includes("Done in Remindo"), "telegram message updated");
-  assert.deepEqual((syncEdit!.body.reply_markup as { inline_keyboard: unknown[] }).inline_keyboard, [], "buttons removed");
+  const syncKb = (syncEdit!.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard.flat();
+  assert.equal(syncKb.length, 1, "Done/Snooze buttons removed");
+  assert.match(syncKb[0].callback_data, /^u:/, "only an Undo button is left");
   // Undo in the app → buttons come back.
   const tgN2 = tgCalls.length;
   await S.uncompleteOccurrence(syncR.id, syncRow.dueAt);
@@ -858,6 +860,164 @@ async function main() {
   const [plain] = await MPs.createDues([{ person: "QA Hiba", direction: "they_owe", amount: 330 }]);
   await MPs.settleDue(plain.id, { log: true });
   assert.equal((await db().select().from(reminders).where(eq(reminders.id, plain.reminderId!)))[0].status, "archived");
+
+  // ---------------------------------------------------------------- Undo everywhere
+  {
+  const U = await import("../src/lib/undo");
+  const { activity, completions, medicines, listItems, lists, goals, goalContributions, settings, tasks } = await import("../src/db");
+  const lastAct = async () => (await U.listActivity(1))[0];
+
+  // Done → undo (and a medicine dose puts the tablet back).
+  const LF = await import("../src/lib/life");
+  const med = (await LF.saveMedicine({ name: "QA Undo Pill", times: ["08:00"], stock: 10, perDose: 1, refillAt: 2 }))!;
+  const medR = med.reminderIds[0];
+  const [medRow] = await db().select().from(reminders).where(eq(reminders.id, medR));
+  const { undoId: doseUndo } = await U.track(() => S.completeOccurrence(medR, medRow.dueAt));
+  assert.ok(doseUndo, "done is recorded");
+  assert.equal((await db().select().from(medicines).where(eq(medicines.id, med.id)))[0].stock, 9);
+  assert.equal((await lastAct()).title, "Done · 💊 QA Undo Pill");
+  assert.equal((await U.undoActivity(doseUndo!)).ok, true);
+  assert.equal((await db().select().from(medicines).where(eq(medicines.id, med.id)))[0].stock, 10, "tablet back");
+  assert.equal((await db().select().from(completions).where(eq(completions.reminderId, medR))).length, 0, "not done any more");
+  assert.equal((await U.undoActivity(doseUndo!)).title, "Already undone", "can't undo twice");
+  // Un-ticking in the app closes the history entry too.
+  const { undoId: d2 } = await U.track(() => S.completeOccurrence(medR, medRow.dueAt));
+  await S.uncompleteOccurrence(medR, medRow.dueAt);
+  assert.ok((await db().select().from(activity).where(eq(activity.id, d2!)))[0].undoneAt, "manual untick marks entry undone");
+
+  // Delete a reminder → undo brings it back with its history.
+  const [delR] = await createReminders([{ title: "QA undo delete", date: local(60 * 24).date, time: "09:00", recurrence: "none", interval: 1, priority: "normal" }]);
+  await db().insert(completions).values({ reminderId: delR.id, occurrenceAt: new Date(Date.now() - 864e5) });
+  const RR = await import("../src/app/api/reminders/[id]/route");
+  const delRes = await RR.DELETE(new Request("https://x", { method: "DELETE" }), { params: Promise.resolve({ id: delR.id }) });
+  const delUndo = delRes.headers.get("x-undo-id");
+  assert.ok(delUndo, "route sends x-undo-id");
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, delR.id))).length, 0);
+  await U.undoActivity(delUndo!);
+  const [back] = await db().select().from(reminders).where(eq(reminders.id, delR.id));
+  assert.equal(back.title, "QA undo delete", "reminder restored");
+  assert.ok(back.version > delR.version, "version bumped so alerts are re-planned");
+  assert.equal((await db().select().from(completions).where(eq(completions.reminderId, delR.id))).length, 1, "history restored");
+  assert.ok((await db().select().from(deliveries).where(eq(deliveries.reminderId, delR.id))).length > 0, "alerts planned again");
+
+  // Edit a reminder → undo puts the old title/time back.
+  const editRes = await RR.PATCH(
+    new Request("https://x", { method: "PATCH", body: JSON.stringify({ title: "QA renamed", date: local(60 * 24).date, time: "11:00", recurrence: "none", interval: 1, priority: "normal" }) }),
+    { params: Promise.resolve({ id: delR.id }) },
+  );
+  await U.undoActivity(editRes.headers.get("x-undo-id")!);
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, delR.id)))[0].title, "QA undo delete", "edit undone");
+
+  // Settle a due → undo: open again, refund entry gone, reminder back.
+  const [uDue] = await MPs.createDues([{ person: "QA Undo Riya", direction: "they_owe", amount: 400 }]);
+  const txBefore = (await db().select().from(transactions)).length;
+  const { undoId: settleUndo } = await U.track(() => MPs.settleDue(uDue.id, { log: true }));
+  assert.equal((await db().select().from(transactions)).length, txBefore + 1, "refund logged");
+  assert.equal((await lastAct()).title, "QA Undo Riya paid you back ₹400");
+  await U.undoActivity(settleUndo!);
+  const [dueBack] = await db().select().from(dues).where(eq(dues.id, uDue.id));
+  assert.equal(dueBack.settledAt, null, "due open again");
+  assert.equal((await db().select().from(transactions)).length, txBefore, "refund removed");
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, uDue.reminderId!)))[0].status, "active", "collect reminder back");
+
+  // Settle up with someone = one entry; undo reopens every due.
+  await MPs.createDues([{ person: "QA Undo Sam", direction: "they_owe", amount: 100 }, { person: "QA Undo Sam", direction: "they_owe", amount: 200 }]);
+  const actBefore = (await db().select().from(activity)).length;
+  const { undoId: allUndo } = await U.track(() => MPs.settlePerson("QA Undo Sam"));
+  assert.equal((await db().select().from(activity)).length, actBefore + 1, "one history entry");
+  assert.equal((await lastAct()).title, "Settled up with QA Undo Sam");
+  await U.undoActivity(allUndo!);
+  assert.equal((await db().select().from(dues).where(eq(dues.person, "QA Undo Sam"))).filter((d) => d.settledAt).length, 0, "both reopened");
+
+  // Task done → undo; delete → undo.
+  const TK = await import("../src/lib/tasks");
+  const [uTask] = await TK.createTasks([{ title: "QA undo task", priority: "normal", focus: false }]);
+  const { undoId: tUndo } = await U.track(() => TK.updateTask(uTask.id, { done: true }));
+  await U.undoActivity(tUndo!);
+  assert.equal((await db().select().from(tasks).where(eq(tasks.id, uTask.id)))[0].done, false);
+  const { undoId: tDel } = await U.track(() => TK.deleteTask(uTask.id));
+  await U.undoActivity(tDel!);
+  assert.equal((await db().select().from(tasks).where(eq(tasks.id, uTask.id))).length, 1, "task back");
+
+  // Expense added by mistake → undo removes it; edit → undo.
+  const { value: [uTx], undoId: addUndo } = await U.track(() => ct2([{ type: "expense", amount: 999, category: "Food", note: "QA oops", date: local(0).date }]));
+  await U.undoActivity(addUndo!);
+  assert.equal((await db().select().from(transactions).where(eq(transactions.id, uTx.id))).length, 0, "added expense removed");
+
+  // Delete a list → undo brings the items back.
+  const { value: added } = await U.track(() => LF.addToList("QA undo shopping", ["eggs", "milk"]));
+  const LR2 = await import("../src/app/api/lists/[id]/route");
+  const ldel = await LR2.DELETE(new Request("https://x", { method: "DELETE" }), { params: Promise.resolve({ id: added.list.id }) });
+  assert.equal((await db().select().from(lists).where(eq(lists.id, added.list.id))).length, 0);
+  await U.undoActivity(ldel.headers.get("x-undo-id")!);
+  assert.equal((await db().select().from(listItems).where(eq(listItems.listId, added.list.id))).length, 2, "list and items back");
+
+  // Goal deleted with its savings → undo.
+  const { value: g } = await U.track(async () => (await db().insert(goals).values({ name: "QA goal", targetPaise: 100000 }).returning())[0]);
+  await MPs.addContribution(g.id, 500, null);
+  const GR = await import("../src/app/api/goals/[id]/route");
+  const gdel = await GR.DELETE(new Request("https://x", { method: "DELETE" }), { params: Promise.resolve({ id: g.id }) });
+  await U.undoActivity(gdel.headers.get("x-undo-id")!);
+  assert.equal((await db().select().from(goalContributions).where(eq(goalContributions.goalId, g.id))).length, 1, "goal savings back");
+
+  // Split deleted → undo restores split, dues and expense.
+  const usp = (await SP.createSplit({ title: "QA undo dinner", amount: 600, date: local(0).date, people: [{ person: "me" }, { person: "QA Undo Arun" }] }))!;
+  const { undoId: spDel } = await U.track(() => SP.deleteSplit(usp.id, { deleteExpense: true }));
+  await U.undoActivity(spDel!);
+  assert.equal((await db().select().from(dues).where(eq(dues.splitId, usp.id))).length, 1, "split dues back");
+  assert.equal((await db().select().from(transactions).where(eq(transactions.id, usp.transactionId!))).length, 1, "split expense back");
+
+  // Places live in settings: done → undo.
+  const PL = await import("../src/lib/places");
+  const [pr] = await PL.addPlaceReminders([{ text: "QA undo parcel", place: "office", on: "arrive", repeat: false }]);
+  const { undoId: prUndo } = await U.track(() => PL.updatePlaceReminder(pr.id, { active: false }));
+  await U.undoActivity(prUndo!);
+  assert.equal((await PL.listPlaceReminders()).find((x) => x.id === pr.id)!.active, true, "place reminder back on");
+  void settings;
+
+  // Budgets and categories (settings + moved entries) → undo.
+  const FI = await import("../src/lib/finance");
+  const budgetsBefore = await FI.getBudgets();
+  const BR = await import("../src/app/api/budgets/route");
+  const bres = await BR.PUT(new Request("https://x", { method: "PUT", body: JSON.stringify({ budgets: { Food: 1 } }) }));
+  await U.undoActivity(bres.headers.get("x-undo-id")!);
+  assert.deepEqual(await FI.getBudgets(), budgetsBefore, "budgets back");
+  const CT = await import("../src/lib/categories");
+  await CT.addCategory({ name: "QA Undo Cat", emoji: "🧪", type: "expense" } as never);
+  const [catTx] = await ct2([{ type: "expense", amount: 10, category: "QA Undo Cat", note: "QA cat tx", date: local(0).date }]);
+  const { undoId: catUndo } = await U.track(() => CT.deleteCategory("QA Undo Cat"));
+  assert.equal((await db().select().from(transactions).where(eq(transactions.id, catTx.id)))[0].category, "Other");
+  await U.undoActivity(catUndo!);
+  assert.equal((await db().select().from(transactions).where(eq(transactions.id, catTx.id)))[0].category, "QA Undo Cat", "entries moved back");
+  assert.ok((await CT.getCategories()).expense.includes("QA Undo Cat"), "category back");
+
+  // Telegram: Undo button on a done alert, and /undo.
+  const [tgR] = await createReminders([{ title: "QA tg undo", date: local(60 * 24).date, time: "10:00", recurrence: "none", interval: 1, priority: "high", category: "bills" }]);
+  const [tgRow] = await db().select().from(reminders).where(eq(reminders.id, tgR.id));
+  const [tgDl] = await db().select().from(deliveries).where(and(eq(deliveries.reminderId, tgR.id), eq(deliveries.occurrenceAt, tgRow.dueAt), eq(deliveries.leadMinutes, 0)));
+  await S.sendDelivery(tgDl.id);
+  await call({ callback_query: { id: "cbU1", data: `a:done:${tgDl.id}`, from: { id: 42 }, message: { message_id: 70, chat: { id: 42 }, text: "QA tg undo" } } });
+  const tgEdit = tgCalls.filter((c) => c.method === "editMessageText").at(-1)!;
+  const undoBtn = (tgEdit.body.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard.flat().find((b) => b.callback_data.startsWith("u:"));
+  assert.ok(undoBtn, "Telegram shows Undo after Done");
+  await call({ callback_query: { id: "cbU2", data: undoBtn!.callback_data, from: { id: 42 }, message: { message_id: 70, chat: { id: 42 }, text: "QA tg undo" } } });
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, tgR.id)))[0].status, "active", "Telegram Undo reopens it");
+  await S.completeOccurrence(tgR.id, tgRow.dueAt);
+  await call({ message: { message_id: 71, chat: { id: 42 }, text: "/undo" } });
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, tgR.id)))[0].status, "active", "/undo undoes the last change");
+
+  // Email: the result page has an Undo button that works.
+  const [emR] = await createReminders([{ title: "QA email undo", date: local(60 * 24).date, time: "10:00", recurrence: "none", interval: 1, priority: "high" }]);
+  const [emRow] = await db().select().from(reminders).where(eq(reminders.id, emR.id));
+  const [emDl] = await db().select().from(deliveries).where(and(eq(deliveries.reminderId, emR.id), eq(deliveries.occurrenceAt, emRow.dueAt), eq(deliveries.leadMinutes, 0)));
+  const AR = await import("../src/app/api/action/route");
+  const { signToken } = await import("../src/lib/auth");
+  const page1 = await (await AR.POST(new Request(`https://x/api/action?t=${encodeURIComponent(await signToken({ did: emDl.id, act: "done" }, "1d"))}`, { method: "POST" }))).text();
+  const undoT = decodeURIComponent(page1.match(/action\?t=([^"]+)"/)![1]);
+  assert.match(page1, /Undo/, "email page offers Undo");
+  await AR.POST(new Request(`https://x/api/action?t=${encodeURIComponent(undoT)}`, { method: "POST" }));
+  assert.equal((await db().select().from(reminders).where(eq(reminders.id, emR.id)))[0].status, "active", "email Undo works");
+  }
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }

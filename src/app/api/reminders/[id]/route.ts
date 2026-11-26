@@ -3,6 +3,9 @@ import { eq, sql } from "drizzle-orm";
 import { db, reminders } from "@/db";
 import { inputToRow, reminderInputSchema } from "@/lib/reminder-input";
 import { cancelQueued, planAndQueue } from "@/lib/scheduler";
+import { withUndo } from "@/lib/undo-route";
+import { changeRow } from "@/lib/undo";
+import { deleteReminders } from "@/lib/create";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -14,25 +17,29 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 /** Edit a reminder: body is a ReminderInput. Old queued alerts are dropped and re-planned. */
-export async function PATCH(req: Request, { params }: Ctx) {
+export const PATCH = withUndo(async (req: Request, { params }: Ctx) => {
   const { id } = await params;
   const parsed = reminderInputSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
 
-  await cancelQueued(id);
-  const [updated] = await db()
-    .update(reminders)
-    .set({ ...inputToRow(parsed.data), status: "active", version: sql`${reminders.version} + 1`, updatedAt: new Date() })
-    .where(eq(reminders.id, id))
-    .returning();
+  const [before] = await db().select().from(reminders).where(eq(reminders.id, id));
+  if (!before) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const updated = await changeRow("reminders", id, `Edited “${before.title}”`, "edit", async () => {
+    await cancelQueued(id);
+    const [row] = await db()
+      .update(reminders)
+      .set({ ...inputToRow(parsed.data), status: "active", version: sql`${reminders.version} + 1`, updatedAt: new Date() })
+      .where(eq(reminders.id, id))
+      .returning();
+    return row;
+  });
   if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
   await planAndQueue({ reminderIds: [id] }).catch(() => null);
   return NextResponse.json({ reminder: updated });
-}
+});
 
-export async function DELETE(_req: Request, { params }: Ctx) {
+export const DELETE = withUndo(async (_req: Request, { params }: Ctx) => {
   const { id } = await params;
-  await cancelQueued(id);
-  await db().delete(reminders).where(eq(reminders.id, id));
+  await deleteReminders([id]);
   return NextResponse.json({ ok: true });
-}
+});

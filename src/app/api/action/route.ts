@@ -43,10 +43,23 @@ export async function GET(req: Request) {
   return page(r.title, r.allDay ? fmtLocal(d.occurrenceAt, "EEEE, d MMM") : fmtLocal(d.occurrenceAt, "EEEE, d MMM · h:mm a"), true, form);
 }
 
+/** "Undo" button on the result page (pressed by mistake in an email). */
+async function undoForm(undoId: string | null | undefined) {
+  if (!undoId) return "";
+  const t = await signToken({ undo: undoId }, "1d");
+  return `<form method="post" action="/api/action?t=${encodeURIComponent(t)}">
+<button style="background:transparent;color:#e5e7eb;border:1px solid #374151;border-radius:12px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:20px">↩️ Undo</button></form>`;
+}
+
 export async function POST(req: Request) {
   const token = new URL(req.url).searchParams.get("t");
-  const payload = await verifyToken<{ did: string; act: string }>(token);
+  const payload = await verifyToken<{ did: string; act: string; undo?: string }>(token);
   if (!payload) return page("Link expired", "This link is invalid or older than 14 days. Use the dashboard instead.", false);
+  if (payload.undo) {
+    const { undoActivity } = await import("@/lib/undo");
+    const u = await undoActivity(payload.undo);
+    return page(u.title, u.message, u.ok);
+  }
   if (!(ACTIONS as readonly string[]).includes(payload.act)) return page("Unknown action", "That link isn't recognised.", false);
 
   const res = await performAction(payload.did, payload.act as ActionName, "email");
@@ -55,7 +68,8 @@ export async function POST(req: Request) {
     const logToken = await signToken({ did: payload.did, act: "log" }, "14d");
     const form = `<form method="post" action="/api/action?t=${encodeURIComponent(logToken)}">
 <button style="background:#10b981;color:#fff;border:0;border-radius:12px;padding:14px 22px;font-size:16px;font-weight:600;cursor:pointer;margin-bottom:20px">Log ${esc(formatINR(res.canLog))} as paid</button></form>`;
-    return page(res.title, res.message, true, form);
+    return page(res.title, res.message, true, form + (await undoForm(res.undoId)));
   }
-  return page(res.title, res.message, res.ok);
+  const undo = await undoForm(res.undoId);
+  return undo ? page(res.title, res.message, res.ok, undo) : page(res.title, res.message, res.ok);
 }

@@ -794,6 +794,7 @@ export function ListsScreen() {
   const { data, loading } = useData<{ lists: ListSummary[] }>("/api/lists");
   const [creating, setCreating] = useState<"list" | "note" | null>(null);
   const router = useRouter();
+  const { toast } = useToast();
   const hidden = useHidden();
   const del = useUndoDelete();
   const all = (data?.lists || []).filter((l) => !hidden.has(l.id));
@@ -845,7 +846,11 @@ export function ListsScreen() {
                   label: l.pinned ? "Unpin" : "Pin",
                   icon: l.pinned ? <PinOff className="h-5 w-5" /> : <Pin className="h-5 w-5" />,
                   className: "bg-indigo-500",
-                  onTrigger: () => api(`/api/lists/${l.id}`, { method: "PATCH", json: { pinned: !l.pinned } }).then(refreshAll),
+                  onTrigger: () =>
+                    api(`/api/lists/${l.id}`, { method: "PATCH", json: { pinned: !l.pinned } }).then(() => {
+                      refreshAll();
+                      toast({ message: l.pinned ? `Unpinned ${l.name}` : `Pinned ${l.name} to the top` });
+                    }),
                 }}
                 swipeLeft={{ label: "Delete", icon: <Trash2 className="h-5 w-5" />, className: "bg-rose-500", onTrigger: () => del(l.id, `“${l.name}” deleted`, `/api/lists/${l.id}`) }}
               />

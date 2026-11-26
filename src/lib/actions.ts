@@ -15,6 +15,8 @@ export type ActionResult = {
   message: string;
   /** Bill amount (paise) that can still be logged after "done". */
   canLog?: number;
+  /** History entry to undo this. */
+  undoId?: string | null;
 };
 
 /**
@@ -22,6 +24,12 @@ export type ActionResult = {
  * buttons and Telegram buttons so they all behave the same.
  */
 export async function performAction(deliveryId: string, act: ActionName, via: Via = "app"): Promise<ActionResult> {
+  const { track } = await import("./undo");
+  const { value, undoId } = await track(() => performActionInner(deliveryId, act, via), { via });
+  return { ...value, undoId };
+}
+
+async function performActionInner(deliveryId: string, act: ActionName, via: Via): Promise<ActionResult> {
   const [d] = await db().select().from(deliveries).where(eq(deliveries.id, deliveryId));
   if (!d) return { ok: false, title: "Not found", message: "This reminder no longer exists." };
   const [r] = await db().select().from(reminders).where(eq(reminders.id, d.reminderId));

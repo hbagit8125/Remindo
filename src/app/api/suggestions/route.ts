@@ -1,5 +1,6 @@
 import { connection, NextResponse } from "next/server";
 import { acceptSuggestion, dismissSuggestion, getSuggestions } from "@/lib/suggestions";
+import { withUndo } from "@/lib/undo-route";
 
 export async function GET() {
   await connection();
@@ -7,7 +8,7 @@ export async function GET() {
 }
 
 /** { key, action: "accept" | "dismiss" } */
-export async function POST(req: Request) {
+export const POST = withUndo(async (req: Request) => {
   const { key, action } = (await req.json().catch(() => ({}))) as { key?: string; action?: string };
   if (!key) return NextResponse.json({ error: "Missing key" }, { status: 400 });
   if (action === "accept") {
@@ -16,4 +17,4 @@ export async function POST(req: Request) {
   }
   await dismissSuggestion(key);
   return NextResponse.json({ ok: true });
-}
+});

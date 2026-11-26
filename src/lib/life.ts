@@ -20,9 +20,16 @@ const monthDay = z
 
 /** Create or replace the reminder behind a document/person/medicine. */
 async function upsertReminder(id: string | null, input: ReminderInput, meta?: Record<string, unknown>) {
+  const u = await import("./undo");
+  return u.recorded({ title: null, kind: "edit" }, async (rec) => upsertReminderInner(id, input, meta, rec));
+}
+
+async function upsertReminderInner(id: string | null, input: ReminderInput, meta: Record<string, unknown> | undefined, rec: (op: import("./undo").Op | null) => void) {
+  const u = await import("./undo");
   if (id) {
     const [existing] = await db().select().from(reminders).where(eq(reminders.id, id));
     if (existing) {
+      rec(await u.snapReminder(id));
       await cancelQueued(id);
       await db()
         .update(reminders)
@@ -36,14 +43,19 @@ async function upsertReminder(id: string | null, input: ReminderInput, meta?: Re
     .insert(reminders)
     .values({ ...inputToRow(input), meta: meta ?? null })
     .returning();
+  rec(u.removed("reminders", [r.id]));
   await planAndQueue({ reminderIds: [r.id] });
   return r.id;
 }
 
 async function deleteReminder(id: string | null) {
   if (!id) return;
-  await cancelQueued(id);
-  await db().delete(reminders).where(eq(reminders.id, id));
+  const u = await import("./undo");
+  await u.recorded({ title: null, kind: "delete" }, async (rec) => {
+    rec(await u.snapReminder(id));
+    await cancelQueued(id);
+    await db().delete(reminders).where(eq(reminders.id, id));
+  });
 }
 
 // ------------------------------------------------------------- documents & renewals
@@ -86,7 +98,7 @@ function docReminder(d: DocumentInput): ReminderInput {
   };
 }
 
-export async function saveDocument(input: DocumentInput, id?: string) {
+async function saveDocumentInner(input: DocumentInput, id?: string) {
   const values = {
     kind: input.kind,
     name: input.name,
@@ -110,10 +122,10 @@ export async function saveDocument(input: DocumentInput, id?: string) {
 }
 
 /** Renewed: new expiry date, and optionally log what it cost. */
-export async function renewDocument(id: string, newExpiry: string, cost: number | null, now = new Date()) {
+async function renewDocumentInner(id: string, newExpiry: string, cost: number | null, now = new Date()) {
   const [cur] = await db().select().from(documents).where(eq(documents.id, id));
   if (!cur) return null;
-  const d = await saveDocument(
+  const d = await saveDocumentInner(
     { kind: cur.kind as DocumentInput["kind"], name: cur.name, number: cur.number, expiryDate: newExpiry, renewalCost: cost ?? (cur.renewalCostPaise ? cur.renewalCostPaise / 100 : null), notes: cur.notes },
     id,
   );
@@ -129,7 +141,7 @@ export async function listDocuments() {
   return db().select().from(documents).orderBy(asc(documents.expiryDate));
 }
 
-export async function deleteDocument(id: string) {
+async function deleteDocumentInner(id: string) {
   const [d] = await db().select().from(documents).where(eq(documents.id, id));
   if (!d) return;
   await deleteReminder(d.reminderId);
@@ -175,7 +187,7 @@ function personReminder(p: PersonInput, which: "birthday" | "anniversary", now: 
   };
 }
 
-export async function savePerson(input: PersonInput, id?: string, now = new Date()) {
+async function savePersonInner(input: PersonInput, id?: string, now = new Date()) {
   const cur = id ? (await db().select().from(people).where(eq(people.id, id)))[0] : null;
   if (id && !cur) return null;
   const bId = input.birthday ? await upsertReminder(cur?.birthdayReminderId ?? null, personReminder(input, "birthday", now), { kind: "person" }) : null;
@@ -220,7 +232,7 @@ export async function listPeople(now = new Date()) {
     .sort((a, b) => Math.min(a.daysToBirthday ?? 999, a.daysToAnniversary ?? 999) - Math.min(b.daysToBirthday ?? 999, b.daysToAnniversary ?? 999));
 }
 
-export async function deletePerson(id: string) {
+async function deletePersonInner(id: string) {
   const [p] = await db().select().from(people).where(eq(people.id, id));
   if (!p) return;
   await deleteReminder(p.birthdayReminderId);
@@ -240,7 +252,7 @@ export const medicineInputSchema = z.object({
 });
 export type MedicineInput = z.infer<typeof medicineInputSchema>;
 
-export async function saveMedicine(input: MedicineInput, id?: string, now = new Date()) {
+async function saveMedicineInner(input: MedicineInput, id?: string, now = new Date()) {
   const cur = id ? (await db().select().from(medicines).where(eq(medicines.id, id)))[0] : null;
   if (id && !cur) return null;
   // One daily reminder per dose time. Simplest is to recreate them on every save.
@@ -286,14 +298,14 @@ export async function listMedicines() {
   return db().select().from(medicines).where(eq(medicines.active, true)).orderBy(asc(medicines.name));
 }
 
-export async function deleteMedicine(id: string) {
+async function deleteMedicineInner(id: string) {
   const [m] = await db().select().from(medicines).where(eq(medicines.id, id));
   if (!m) return;
   for (const rid of m.reminderIds) await deleteReminder(rid);
   await db().delete(medicines).where(eq(medicines.id, id));
 }
 
-export async function refillMedicine(id: string, added: number) {
+async function refillMedicineInner(id: string, added: number) {
   const [m] = await db()
     .update(medicines)
     .set({ stock: sql`coalesce(${medicines.stock}, 0) + ${added}`, refillAlertSentAt: null })
@@ -373,16 +385,87 @@ const LIST_EMOJI: [RegExp, string][] = [
 
 /** Add items to a list by name, creating the list if it doesn't exist ("shopping" → Shopping list). */
 export async function addToList(name: string, items: string[]) {
+  const u = await import("./undo");
+  return u.recorded({ title: (r: { list: { name: string }; added: number }) => `Added ${r.added} to ${r.list.name}`, kind: "add" }, async (rec) => addToListInner(name, items, rec));
+}
+
+async function addToListInner(name: string, items: string[], rec: (op: import("./undo").Op | null) => void) {
+  const u = await import("./undo");
   const clean = name.replace(/\b(list|my|the)\b/gi, "").trim() || "Shopping";
   const title = clean[0].toUpperCase() + clean.slice(1);
   let [l] = await db().select().from(lists).where(and(eq(lists.kind, "list"), ilike(lists.name, `%${clean}%`)));
-  if (!l) [l] = await db().insert(lists).values({ name: title, emoji: LIST_EMOJI.find(([re]) => re.test(clean))?.[1] || "📝" }).returning();
+  if (!l) {
+    [l] = await db().insert(lists).values({ name: title, emoji: LIST_EMOJI.find(([re]) => re.test(clean))?.[1] || "📝" }).returning();
+    rec(u.removed("lists", [l.id]));
+  }
   const base = Date.now() % 1e9;
   const rows = items.map((t) => t.trim()).filter(Boolean);
-  if (rows.length) await db().insert(listItems).values(rows.map((text, i) => ({ listId: l.id, text, sortOrder: base + i })));
+  if (rows.length) {
+    const made = await db()
+      .insert(listItems)
+      .values(rows.map((text, i) => ({ listId: l.id, text, sortOrder: base + i })))
+      .returning();
+    rec(u.removed("listItems", made.map((m) => m.id)));
+  }
   await db().update(lists).set({ updatedAt: new Date() }).where(eq(lists.id, l.id));
   return { list: l, added: rows.length };
 }
 
 export const listAddSchema = z.object({ list: z.string().trim().min(1).max(60), items: z.array(z.string().trim().min(1).max(200)).min(1).max(50) });
 export type ListAdd = z.infer<typeof listAddSchema>;
+
+// ------------------------------------------------------------- undoable wrappers
+// Linked reminders are recorded by upsertReminder/deleteReminder; these add the row itself.
+
+async function saveRow<V extends { id: string } | null>(
+  t: "documents" | "people" | "medicines",
+  id: string | undefined,
+  title: string,
+  fn: () => Promise<V>,
+) {
+  const u = await import("./undo");
+  return u.recorded({ title, kind: id ? "edit" : "add" }, async (rec) => {
+    if (id) rec(await u.snap(t, [id]));
+    const row = await fn();
+    if (!id && row) rec(u.removed(t, [row.id]));
+    return row;
+  });
+}
+
+async function deleteRow(t: "documents" | "people" | "medicines", id: string, title: string, fn: () => Promise<void>) {
+  const u = await import("./undo");
+  await u.recorded({ title, kind: "delete" }, async (rec) => {
+    rec(await u.snap(t, [id]));
+    await fn();
+  });
+}
+
+export function saveDocument(input: DocumentInput, id?: string) {
+  return saveRow("documents", id, `${id ? "Edited" : "Added"} ${input.name}`, () => saveDocumentInner(input, id));
+}
+export async function renewDocument(id: string, newExpiry: string, cost: number | null, now = new Date()) {
+  const [cur] = await db().select().from(documents).where(eq(documents.id, id));
+  return saveRow("documents", id, `Renewed ${cur?.name || "document"}`, () => renewDocumentInner(id, newExpiry, cost, now));
+}
+export async function deleteDocument(id: string) {
+  const [cur] = await db().select().from(documents).where(eq(documents.id, id));
+  if (cur) await deleteRow("documents", id, `Deleted ${cur.name}`, () => deleteDocumentInner(id));
+}
+export function savePerson(input: PersonInput, id?: string, now = new Date()) {
+  return saveRow("people", id, `${id ? "Edited" : "Added"} ${input.name}`, () => savePersonInner(input, id, now));
+}
+export async function deletePerson(id: string) {
+  const [cur] = await db().select().from(people).where(eq(people.id, id));
+  if (cur) await deleteRow("people", id, `Removed ${cur.name}`, () => deletePersonInner(id));
+}
+export function saveMedicine(input: MedicineInput, id?: string, now = new Date()) {
+  return saveRow("medicines", id, `${id ? "Edited" : "Added"} ${input.name}`, () => saveMedicineInner(input, id, now));
+}
+export async function deleteMedicine(id: string) {
+  const [cur] = await db().select().from(medicines).where(eq(medicines.id, id));
+  if (cur) await deleteRow("medicines", id, `Removed ${cur.name}`, () => deleteMedicineInner(id));
+}
+export async function refillMedicine(id: string, added: number) {
+  const [cur] = await db().select().from(medicines).where(eq(medicines.id, id));
+  return saveRow("medicines", id, `Refilled ${cur?.name || "medicine"} (+${added})`, () => refillMedicineInner(id, added));
+}

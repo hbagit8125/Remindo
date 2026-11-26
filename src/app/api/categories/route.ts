@@ -1,6 +1,7 @@
 import { connection, NextResponse } from "next/server";
 import { z } from "zod";
 import { addCategory, categoryInputSchema, deleteCategory, getCategories, setHidden, updateCategory } from "@/lib/categories";
+import { withUndo } from "@/lib/undo-route";
 
 const err = (e: unknown) => NextResponse.json({ error: (e as Error).message }, { status: 400 });
 
@@ -10,7 +11,7 @@ export async function GET() {
 }
 
 /** Add your own category: { name, emoji, type }. */
-export async function POST(req: Request) {
+export const POST = withUndo(async (req: Request) => {
   const p = categoryInputSchema.safeParse(await req.json().catch(() => null));
   if (!p.success) return NextResponse.json({ error: "Give the category a name" }, { status: 400 });
   try {
@@ -18,10 +19,10 @@ export async function POST(req: Request) {
   } catch (e) {
     return err(e);
   }
-}
+});
 
 /** Rename / change emoji: { from, name?, emoji? }  ·  hide/show a built-in: { name, hidden }. */
-export async function PATCH(req: Request) {
+export const PATCH = withUndo(async (req: Request) => {
   const body = await req.json().catch(() => null);
   const hide = z.object({ name: z.string().min(1), hidden: z.boolean() }).safeParse(body);
   const ren = z.object({ from: z.string().min(1), name: z.string().optional(), emoji: z.string().max(8).optional() }).safeParse(body);
@@ -33,10 +34,10 @@ export async function PATCH(req: Request) {
   } catch (e) {
     return err(e);
   }
-}
+});
 
 /** Delete your own category: ?name=… (its entries move to Other). */
-export async function DELETE(req: Request) {
+export const DELETE = withUndo(async (req: Request) => {
   const n = new URL(req.url).searchParams.get("name");
   if (!n) return NextResponse.json({ error: "Which category?" }, { status: 400 });
   try {
@@ -45,4 +46,4 @@ export async function DELETE(req: Request) {
   } catch (e) {
     return err(e);
   }
-}
+});
