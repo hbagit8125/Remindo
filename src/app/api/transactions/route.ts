@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { inArray } from "drizzle-orm";
-import { db, dues, splits, transactions } from "@/db";
+import { accounts, db, dues, splits, transactions } from "@/db";
 import { transactionInputSchema } from "@/lib/money";
 import { currentMonth, listTransactions } from "@/lib/finance";
 import { createTransactions } from "@/lib/create";
@@ -37,7 +37,14 @@ export async function GET(req: Request) {
       },
     };
   });
-  return NextResponse.json({ month, transactions: withSplit, usedCategories: cats });
+  // Account names, so each entry can say "UPI · SBI" or "Card · HDFC Millennia".
+  const accs = await db().select({ id: accounts.id, name: accounts.name, kind: accounts.kind }).from(accounts);
+  const named = withSplit.map((t) => {
+    const a = accs.find((x) => x.id === t.accountId);
+    const to = accs.find((x) => x.id === t.toAccountId);
+    return { ...t, accountName: a?.name ?? null, accountKind: a?.kind ?? null, toAccountName: to?.name ?? null };
+  });
+  return NextResponse.json({ month, transactions: named, usedCategories: cats });
 }
 
 /** Add one or more: { items: TransactionInput[] } */

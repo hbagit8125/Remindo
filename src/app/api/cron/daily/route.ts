@@ -12,6 +12,7 @@ import { getPrefs } from "@/lib/settings";
 export async function GET(req: Request) {
   if (!isCronAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const plan = await runJob("daily planning", () => planAndQueue());
+  await runJob("autopay", () => import("@/lib/autopay").then((m) => m.autopayTick()));
   await runJob("credit card bills", () => import("@/lib/cards").then((m) => m.syncAllCards()));
   await runJob("undo history clean-up", () => import("@/lib/undo").then((u) => u.pruneActivity()));
   const prefs = await getPrefs().catch(() => null);

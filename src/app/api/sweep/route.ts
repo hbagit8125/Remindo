@@ -10,5 +10,8 @@ import { runJob } from "@/lib/errors";
  */
 export async function GET(req: Request) {
   if (!isCronAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  return NextResponse.json(await runJob("sweep", () => sweep()));
+  const res = await runJob("sweep", () => sweep());
+  // SIPs/EMIs due today, and "top up" reminders for tomorrow's.
+  const autopay = await runJob("autopay", () => import("@/lib/autopay").then((m) => m.autopayTick()));
+  return NextResponse.json({ ...(res as object), autopay });
 }

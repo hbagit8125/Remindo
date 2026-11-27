@@ -425,3 +425,47 @@ export const savingEntries = pgTable(
   (t) => [index("saving_entries_saving_idx").on(t.savingId)],
 );
 export type SavingEntry = typeof savingEntries.$inferSelect;
+
+/**
+ * Automatic monthly payments: SIPs (bank → a saving) and EMIs (loan repayments, counted as spending).
+ * On the day, the payment is recorded from the chosen account by itself; if that account looks short
+ * the day before, you get a reminder.
+ */
+export const autopays = pgTable("autopays", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** sip | emi */
+  kind: text("kind").notNull(),
+  name: text("name").notNull(),
+  amountPaise: integer("amount_paise").notNull(),
+  /** Day of the month (31 = last day in shorter months). */
+  day: integer("day").notNull(),
+  accountId: uuid("account_id"),
+  /** SIP: the saving it goes into. */
+  savingId: uuid("saving_id"),
+  /** First payment date (yyyy-MM-dd). Nothing before this, or before it was added, is recorded. */
+  startDate: text("start_date").notNull(),
+  /** EMI: total number of EMIs, how many were paid before you added it, the loan amount and lender. */
+  totalCount: integer("total_count"),
+  paidBefore: integer("paid_before").notNull().default(0),
+  loanPaise: integer("loan_paise"),
+  lender: text("lender"),
+  active: boolean("active").notNull().default(true),
+  /** The low-balance reminder for the next payment, if one was made. */
+  alertReminderId: uuid("alert_reminder_id"),
+  alertFor: text("alert_for"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type Autopay = typeof autopays.$inferSelect;
+
+export const autopayRuns = pgTable(
+  "autopay_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    autopayId: uuid("autopay_id").notNull(),
+    dueDate: text("due_date").notNull(),
+    transactionId: uuid("transaction_id"),
+    savingEntryId: uuid("saving_entry_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("autopay_runs_once").on(t.autopayId, t.dueDate)],
+);

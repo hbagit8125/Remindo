@@ -11,6 +11,7 @@ import { Modal, ghostBtn, primaryBtn, useSubmit } from "@/components/screens/Mon
 import { ACCOUNT_META, type Account } from "@/components/types";
 import { formatINR } from "@/lib/money";
 import { MARKET_KINDS, SAVING_KINDS, type SavingKind } from "@/lib/savings-kinds";
+import { AutopayList } from "@/components/app/Autopay";
 
 type Totals = { inPaise: number; outPaise: number; growthPaise: number; valuePaise: number; investedPaise: number; returnPct: number | null };
 type Saving = Totals & {
@@ -118,10 +119,16 @@ export function SavingsScreen() {
               })}
             </div>
           </Section>
+          <AutopayList kind="sip" />
           <p className="text-xs text-muted">
             Tap a saving to add money, record interest or profit, or update what it&apos;s worth today. Money moved from your bank is a transfer, so it never counts as spending.
           </p>
         </>
+      )}
+      {!loading && !list.length && (
+        <div className="mt-5">
+          <AutopayList kind="sip" />
+        </div>
       )}
       {editing && <SavingForm initial={editing} onClose={() => setEditing(null)} />}
       {openId && (
@@ -195,7 +202,10 @@ function SavingDetail({ id, onClose, onEdit }: { id: string; onClose: () => void
             ))}
           </div>
 
-          <label className={clsx(label, "mt-5")}>History</label>
+          <div className="mt-5">
+            <AutopayList kind="sip" savingId={s.id} />
+          </div>
+          <label className={label}>History</label>
           {!entries.length ? (
             <p className="text-sm text-muted">Nothing yet.</p>
           ) : (

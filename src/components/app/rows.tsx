@@ -293,7 +293,14 @@ export function TxItem({ t }: { t: Transaction }) {
             </span>
           ) : (
             <span className="block truncate text-xs text-muted">
-              {[t.category, t.merchant, t.method && METHOD_LABEL[t.method], t.reminderId && "from bill"].filter(Boolean).join(" · ")}
+              {[
+                t.category,
+                t.merchant,
+                t.type === "transfer" && (t.accountName || t.toAccountName) ? `${t.accountName || "?"} → ${t.toAccountName || "?"}` : [t.method && (t.accountKind === "card" ? "Credit card" : METHOD_LABEL[t.method]), t.accountName].filter(Boolean).join(" · "),
+                t.reminderId && "from bill",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </span>
           )}
         </span>

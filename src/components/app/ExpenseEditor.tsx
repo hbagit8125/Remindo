@@ -1,7 +1,7 @@
 "use client";
 
 import { clsx } from "clsx";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, Plus } from "lucide-react";
 import {
   ACCOUNT_META,
@@ -13,6 +13,7 @@ import {
 } from "../types";
 import { field, label } from "./ReminderEditor";
 import { api, useCategories, useData } from "./client";
+import { formatINR } from "@/lib/money";
 import { useToast } from "./toast";
 
 function AccountChips({
@@ -57,15 +58,29 @@ export function ExpenseEditor({
   onChange,
   extraCategories = [],
   autoFocus,
+  isNew,
 }: {
   value: TransactionInput;
   onChange: (v: TransactionInput) => void;
   extraCategories?: string[];
   autoFocus?: boolean;
+  /** New entry: start with the account you used last time. */
+  isNew?: boolean;
 }) {
   const set = <K extends keyof TransactionInput>(k: K, v: TransactionInput[K]) => onChange({ ...value, [k]: v });
   const { data: acc } = useData<{ accounts: Account[] }>("/api/accounts");
   const accounts = acc?.accounts || [];
+  const defaulted = useRef(false);
+  useEffect(() => {
+    if (!isNew || defaulted.current || !acc || value.type !== "expense") return;
+    defaulted.current = true;
+    if (value.accountId || value.method) return;
+    const last = lastPaidWith();
+    if (!last) return;
+    const a = acc.accounts.find((x) => x.id === last.accountId);
+    if (last.accountId && !a) return;
+    onChange({ ...value, accountId: a?.id ?? null, method: a ? methodFor(a, last.method) : last.method });
+  }, [isNew, acc, value, onChange]);
   const income = value.type === "income";
   const transfer = value.type === "transfer";
   const catData = useCategories();
@@ -187,44 +202,140 @@ export function ExpenseEditor({
       </div>
 
       {!transfer && (
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className={label}>{income ? "From" : "Where"} (optional)</label>
-            <input
-              className={field}
-              placeholder={income ? "Company" : "Shop / app"}
-              value={value.merchant || ""}
-              onChange={(e) => set("merchant", e.target.value || null)}
-            />
-          </div>
-          <div>
-            <label className={label}>Paid with (optional)</label>
-            <div className="grid grid-cols-4 gap-1">
-              {(Object.keys(METHOD_LABEL) as Method[]).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => set("method", value.method === m ? null : m)}
-                  className={clsx(
-                    "rounded-lg border py-2.5 text-[11px] font-medium",
-                    value.method === m
-                      ? "border-indigo-400 bg-indigo-500/15 text-indigo-600 dark:text-indigo-200"
-                      : "border-line text-muted hover:bg-raised",
-                  )}
-                >
-                  {METHOD_LABEL[m]}
-                </button>
-              ))}
-            </div>
-          </div>
+        <div>
+          <label className={label}>{income ? "From" : "Where"} (optional)</label>
+          <input
+            className={field}
+            placeholder={income ? "Company / person" : "Shop / app"}
+            value={value.merchant || ""}
+            onChange={(e) => set("merchant", e.target.value || null)}
+          />
         </div>
       )}
 
-      {!transfer && accounts.length > 0 && (
-        <div>
-          <label className={label}>Account (optional)</label>
-          <AccountChips accounts={accounts} value={value.accountId} onChange={(id) => set("accountId", id)} />
+      {!transfer && <PaidWith value={value} accounts={accounts} onChange={onChange} />}
+    </div>
+  );
+}
+
+const LAST_KEY = "remindo:paidWith";
+const BANK_METHODS: { m: Method; label: string }[] = [
+  { m: "upi", label: "UPI" },
+  { m: "card", label: "Debit card" },
+  { m: "bank", label: "Net banking" },
+];
+
+/** The method that goes with an account: credit card → card, cash → cash, bank/wallet → UPI unless you pick another. */
+function methodFor(a: Account | undefined, current: Method | null | undefined): Method | null {
+  if (!a) return current ?? null;
+  if (a.kind === "card") return "card";
+  if (a.kind === "cash") return "cash";
+  if (a.kind === "wallet") return "upi";
+  return current && current !== "cash" ? current : "upi";
+}
+
+/** Remember the last "paid with" so the next entry starts there. */
+export function rememberPaidWith(v: Pick<TransactionInput, "accountId" | "method">) {
+  try {
+    localStorage.setItem(LAST_KEY, JSON.stringify({ accountId: v.accountId ?? null, method: v.method ?? null }));
+  } catch {
+    // private mode
+  }
+}
+export function lastPaidWith(): { accountId: string | null; method: Method | null } | null {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One "Paid with" picker: your accounts and cards (and cash). Picking one sets UPI/card for you;
+ * for a bank you can switch between UPI, debit card and net banking. The balance (or the card's
+ * bill and limit) follows the account you pick.
+ */
+function PaidWith({ value, accounts, onChange }: { value: TransactionInput; accounts: Account[]; onChange: (v: TransactionInput) => void }) {
+  const income = value.type === "income";
+  const chip = (on: boolean) =>
+    clsx(
+      "flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-medium",
+      on ? "border-indigo-400 bg-indigo-500/15 text-indigo-600 dark:text-indigo-200" : "border-line text-muted hover:bg-raised",
+    );
+  const pick = (accountId: string | null, method: Method | null) => {
+    const next = { ...value, accountId, method: income ? null : method };
+    onChange(next);
+    if (!income) rememberPaidWith(next);
+  };
+  const selected = accounts.find((a) => a.id === value.accountId);
+  const hasCash = accounts.some((a) => a.kind === "cash");
+  const list = income ? accounts.filter((a) => a.kind !== "card" || value.accountId === a.id) : accounts;
+
+  if (!accounts.length) {
+    // No accounts yet: just the method.
+    return income ? null : (
+      <div>
+        <label className={label}>Paid with (optional)</label>
+        <div className="grid grid-cols-4 gap-1">
+          {(Object.keys(METHOD_LABEL) as Method[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => pick(null, value.method === m ? null : m)}
+              className={clsx(
+                "rounded-lg border py-2.5 text-[11px] font-medium",
+                value.method === m ? "border-indigo-400 bg-indigo-500/15 text-indigo-600 dark:text-indigo-200" : "border-line text-muted hover:bg-raised",
+              )}
+            >
+              {METHOD_LABEL[m]}
+            </button>
+          ))}
         </div>
+        <p className="mt-1.5 text-xs text-muted">Add your bank and cards in Money → Accounts to keep balances and card bills right.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label className={label}>{income ? "Received in" : "Paid with"}</label>
+      <div className="flex flex-wrap gap-1.5">
+        {list.map((a) => (
+          <button key={a.id} type="button" className={chip(value.accountId === a.id)} onClick={() => pick(a.id, methodFor(a, value.method))}>
+            {ACCOUNT_META[a.kind].emoji} {a.name}
+          </button>
+        ))}
+        {!income && !hasCash && (
+          <button type="button" className={chip(!value.accountId && value.method === "cash")} onClick={() => pick(null, "cash")}>
+            💵 Cash
+          </button>
+        )}
+        <button type="button" className={chip(!value.accountId && (income || value.method !== "cash"))} onClick={() => pick(null, null)}>
+          Not set
+        </button>
+      </div>
+      {!income && selected?.kind === "bank" && (
+        <div className="mt-2 flex w-fit rounded-lg bg-raised p-0.5 text-xs font-medium">
+          {BANK_METHODS.map((b) => (
+            <button
+              key={b.m}
+              type="button"
+              onClick={() => pick(selected.id, b.m)}
+              className={clsx("rounded-md px-2.5 py-1", value.method === b.m ? "bg-surface shadow-sm ring-1 ring-line" : "text-muted")}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {!income && selected?.kind === "card" && (
+        <p className="mt-1.5 text-xs text-muted">
+          💳 Credit card: goes on {selected.name}&apos;s next bill
+          {selected.card?.availablePaise != null ? ` · ${formatINR(Math.max(0, selected.card.availablePaise))} limit left` : ""}
+        </p>
+      )}
+      {!income && selected && selected.kind !== "card" && value.amount > 0 && selected.balancePaise - Math.round(value.amount * 100) < 0 && (
+        <p className="mt-1.5 text-xs text-amber-600">{selected.name} shows {formatINR(selected.balancePaise)}: this takes it below zero.</p>
       )}
     </div>
   );

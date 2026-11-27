@@ -76,6 +76,9 @@ export type Transaction = {
   createdAt: string;
   /** Set when this expense is a split bill. */
   split?: { id: string; paidBy: string; myPaise: number; people: number; backPaise: number; duePaise: number; iOwePaise: number };
+  accountName?: string | null;
+  accountKind?: string | null;
+  toAccountName?: string | null;
 };
 
 export type Insights = {

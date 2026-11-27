@@ -12,6 +12,7 @@ import { useSheet } from "@/components/app/AddSheet";
 import { field, label } from "@/components/app/ReminderEditor";
 import { ACCOUNT_META, type Account, type AccountKind, type Due, type Goal } from "@/components/types";
 import { formatINR } from "@/lib/money";
+import { AutopayList } from "@/components/app/Autopay";
 
 
 export const primaryBtn = "flex items-center justify-center gap-2 rounded-xl bg-fg px-4 py-2.5 text-sm font-semibold text-[var(--bg)] hover:opacity-90 disabled:opacity-40";
@@ -170,6 +171,7 @@ export function AccountsScreen() {
               {!money.length && <p className="px-1 text-sm text-muted">Add the bank account you pay your card bills from.</p>}
             </div>
           </Section>
+          <AutopayList kind="emi" />
           {accounts.length >= 2 && (
             <button
               onClick={() => open({ mode: "expense", value: { type: "transfer", amount: 0, category: "Transfer", date: today, accountId: accounts[0].id, toAccountId: accounts[1].id } })}

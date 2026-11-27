@@ -17,6 +17,8 @@ const TABLES = {
   splitGroups: T.splitGroups,
   savings: T.savings,
   savingEntries: T.savingEntries,
+  autopays: T.autopays,
+  autopayRuns: T.autopayRuns,
   goals: T.goals,
   goalContributions: T.goalContributions,
   documents: T.documents,

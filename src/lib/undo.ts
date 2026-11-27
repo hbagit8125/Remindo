@@ -38,6 +38,8 @@ const TABLES = {
   settings: T.settings,
   savings: T.savings,
   savingEntries: T.savingEntries,
+  autopays: T.autopays,
+  autopayRuns: T.autopayRuns,
 } satisfies Record<string, PgTable>;
 export type TableName = keyof typeof TABLES;
 

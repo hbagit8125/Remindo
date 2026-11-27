@@ -85,6 +85,13 @@
       "when": 1795751323103,
       "tag": "0011_shared_card_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795752876739,
+      "tag": "0012_autopay",
+      "breakpoints": true
     }
   ]
 }
