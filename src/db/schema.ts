@@ -124,6 +124,8 @@ export const accounts = pgTable("accounts", {
   // Credit cards: limit, the day the bill is generated, the day it must be paid, where you pay it from,
   // and the monthly "Pay the bill" reminder.
   creditLimitPaise: integer("credit_limit_paise"),
+  /** Cards from the same bank often share one limit: the card whose limit this one uses. */
+  sharedLimitId: uuid("shared_limit_id"),
   statementDay: integer("statement_day"),
   dueDay: integer("due_day"),
   payFromId: uuid("pay_from_id"),
@@ -385,3 +387,41 @@ export const activity = pgTable(
   (t) => [index("activity_created_idx").on(t.createdAt), index("activity_ref_idx").on(t.ref)],
 );
 export type Activity = typeof activity.$inferSelect;
+
+/**
+ * Savings & investments: FDs, RDs, mutual funds, stocks, gold, PPF… Each has a history of money put in,
+ * taken out, and growth (interest, profit, dividends; negative = a loss). Value = in − out + growth.
+ */
+export const savings = pgTable("savings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull().default("other"),
+  institution: text("institution"),
+  /** % a year, for FDs/RDs (shown only). */
+  ratePct: text("rate_pct"),
+  /** FD/RD maturity: a reminder a week before and on the day. */
+  maturityDate: text("maturity_date"),
+  reminderId: uuid("reminder_id"),
+  notes: text("notes"),
+  archived: boolean("archived").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type Saving = typeof savings.$inferSelect;
+
+export const savingEntries = pgTable(
+  "saving_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    savingId: uuid("saving_id").notNull(),
+    /** deposit | withdraw | growth (interest/profit; negative = loss) */
+    type: text("type").notNull(),
+    amountPaise: integer("amount_paise").notNull(),
+    date: text("date").notNull(),
+    note: text("note"),
+    /** The bank transfer this deposit/withdrawal made, if you picked an account. */
+    transactionId: uuid("transaction_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("saving_entries_saving_idx").on(t.savingId)],
+);
+export type SavingEntry = typeof savingEntries.$inferSelect;
