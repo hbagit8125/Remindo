@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { clsx } from "clsx";
-import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, ListChecks, Loader2, MapPin, Mic, MicOff, Repeat, Sparkles, Split as SplitIcon, Star, Trash2, Wallet, X } from "lucide-react";
+import { Bell, Camera, Check, CheckSquare, ChevronDown, Handshake, ListChecks, Loader2, MapPin, Mic, MicOff, Plus, Repeat, Sparkles, Split as SplitIcon, Star, Trash2, Wallet, X } from "lucide-react";
 import { api, dayKey, hideId, refreshAll, relativeDay, unhideId, useData } from "./client";
 import { useToast } from "./toast";
 import { ReminderEditor } from "./ReminderEditor";
@@ -787,14 +787,22 @@ function PanelActions({
   onSave,
   onDelete,
   saveLabel = "Save",
+  onSaveMore,
+  added = 0,
 }: {
   saving: boolean;
   disabled?: boolean;
   onSave: () => void;
   onDelete?: () => void;
   saveLabel?: string;
+  /** New items: save and keep the form open for the next one. */
+  onSaveMore?: () => void;
+  /** How many were saved with "Save & add new" in this go. */
+  added?: number;
 }) {
   return (
+    <>
+    {added > 0 && <p className="mt-4 text-center text-xs font-medium text-emerald-600 dark:text-emerald-400">✓ {added} added. Keep going, or tap Save for the last one</p>}
     <div className="mt-6 flex gap-2">
       {onDelete && (
         <button onClick={onDelete} className="grid h-12 w-12 place-items-center rounded-2xl border border-line text-rose-500 hover:bg-rose-500/10" aria-label="Delete">
@@ -810,6 +818,16 @@ function PanelActions({
         {saveLabel}
       </button>
     </div>
+    {onSaveMore && (
+      <button
+        onClick={onSaveMore}
+        disabled={saving || disabled}
+        className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-line text-sm font-semibold hover:bg-raised disabled:opacity-40"
+      >
+        <Plus className="h-4 w-4" /> Save &amp; add new
+      </button>
+    )}
+    </>
   );
 }
 
@@ -818,14 +836,25 @@ function ReminderPanel({ id, initial, close }: { id?: string; initial?: Reminder
   const [value, setValue] = useState<ReminderInput>(initial || blankReminder());
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [added, setAdded] = useState(0);
+  const [formKey, setFormKey] = useState(0);
 
-  async function save() {
+  async function save(more = false) {
     setSaving(true);
     try {
       if (id) await api(`/api/reminders/${id}`, { method: "PATCH", json: value });
       else await api("/api/reminders", { method: "POST", json: { items: [value] } });
-      toast({ message: id ? "Reminder updated" : "Reminder added" });
+      toast({ message: id ? "Reminder updated" : `Reminder added${more ? " · add the next one" : ""}` });
       refreshAll();
+      if (more) {
+        // Same day and settings, fresh title.
+        setValue({ ...value, title: "", notes: null } as ReminderInput);
+        setAdded((n) => n + 1);
+        setFormKey((k) => k + 1);
+        setErr("");
+        setSaving(false);
+        return;
+      }
       close();
     } catch (e) {
       setErr((e as Error).message);
@@ -846,9 +875,16 @@ function ReminderPanel({ id, initial, close }: { id?: string; initial?: Reminder
 
   return (
     <>
-      <ReminderEditor value={value} onChange={setValue} />
+      <ReminderEditor key={formKey} value={value} onChange={setValue} autoFocus={added > 0} />
       {err && <p className="mt-3 text-sm text-rose-500">{err}</p>}
-      <PanelActions saving={saving} disabled={!value.title.trim()} onSave={save} onDelete={id ? remove : undefined} />
+      <PanelActions
+        saving={saving}
+        disabled={!value.title.trim()}
+        onSave={() => save()}
+        onDelete={id ? remove : undefined}
+        onSaveMore={id ? undefined : () => save(true)}
+        added={added}
+      />
     </>
   );
 }
@@ -942,10 +978,12 @@ function ExpensePanel({ id, initial, startSplit, close }: { id?: string; initial
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [asFavourite, setAsFavourite] = useState(false);
+  const [added, setAdded] = useState(0);
+  const [formKey, setFormKey] = useState(0);
   const { data } = useData<{ usedCategories: { category: string; type: string }[] }>("/api/transactions");
   const extra = (data?.usedCategories || []).filter((c) => c.type === value.type).map((c) => c.category);
 
-  async function save() {
+  async function save(more = false) {
     setSaving(true);
     try {
       if (value.type === "transfer" && (!value.accountId || !value.toAccountId)) throw new Error("Pick both accounts for a transfer");
@@ -992,6 +1030,16 @@ function ExpensePanel({ id, initial, startSplit, close }: { id?: string; initial
           : `${value.type === "income" ? "Income" : value.type === "transfer" ? "Transfer" : "Expense"} added · ${formatINR(Math.round(value.amount * 100))}`,
       });
       refreshAll();
+      if (more) {
+        // Next entry: same type, date and "paid with"; fresh amount, note and shop.
+        setValue({ ...blankExpense(), type: value.type, date: value.date, accountId: value.accountId, toAccountId: value.toAccountId, method: value.method, category: value.type === "expense" ? blankExpense().category : value.category });
+        setAsFavourite(false);
+        setAdded((n) => n + 1);
+        setFormKey((k) => k + 1);
+        setErr("");
+        setSaving(false);
+        return;
+      }
       close();
     } catch (e) {
       setErr((e as Error).message);
@@ -1014,6 +1062,7 @@ function ExpensePanel({ id, initial, startSplit, close }: { id?: string; initial
     <>
       {!id && <QuickMoney onScanned={(v) => setValue({ ...blankExpense(), ...v })} />}
       <ExpenseEditor
+        key={formKey}
         value={value}
         onChange={(v) => {
           setValue(v);
@@ -1063,9 +1112,11 @@ function ExpensePanel({ id, initial, startSplit, close }: { id?: string; initial
       <PanelActions
         saving={saving}
         disabled={!value.amount || value.amount <= 0 || (splitOn && Boolean(splitPreview.error))}
-        onSave={save}
+        onSave={() => save()}
         onDelete={id ? remove : undefined}
         saveLabel={splitOn ? "Save & split" : undefined}
+        onSaveMore={id || splitOn ? undefined : () => save(true)}
+        added={added}
       />
     </>
   );
@@ -1076,14 +1127,24 @@ function TaskPanel({ id, initial, close }: { id?: string; initial?: TaskInput; c
   const [value, setValue] = useState<TaskInput>(initial || blankTask());
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [added, setAdded] = useState(0);
+  const [formKey, setFormKey] = useState(0);
 
-  async function save() {
+  async function save(more = false) {
     setSaving(true);
     try {
       if (id) await api(`/api/tasks/${id}`, { method: "PATCH", json: value });
       else await api("/api/tasks", { method: "POST", json: { items: [value] } });
       toast({ message: id ? "Task updated" : value.focus ? "Added to today's focus" : "Task added" });
       refreshAll();
+      if (more) {
+        setValue({ ...value, title: "", notes: null } as TaskInput);
+        setAdded((n) => n + 1);
+        setFormKey((k) => k + 1);
+        setErr("");
+        setSaving(false);
+        return;
+      }
       close();
     } catch (e) {
       setErr((e as Error).message);
@@ -1104,9 +1165,16 @@ function TaskPanel({ id, initial, close }: { id?: string; initial?: TaskInput; c
 
   return (
     <>
-      <TaskEditor value={value} onChange={setValue} autoFocus={!id} onSubmit={() => !saving && value.title.trim() && save()} />
+      <TaskEditor key={formKey} value={value} onChange={setValue} autoFocus={!id} onSubmit={() => !saving && value.title.trim() && save()} />
       {err && <p className="mt-3 text-sm text-rose-500">{err}</p>}
-      <PanelActions saving={saving} disabled={!value.title.trim()} onSave={save} onDelete={id ? remove : undefined} />
+      <PanelActions
+        saving={saving}
+        disabled={!value.title.trim()}
+        onSave={() => save()}
+        onDelete={id ? remove : undefined}
+        onSaveMore={id ? undefined : () => save(true)}
+        added={added}
+      />
     </>
   );
 }

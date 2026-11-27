@@ -11,7 +11,7 @@ const chipOff = "border-line text-muted hover:bg-raised";
 const DEFAULT_LEADS = { high: [10080, 1440, 0], normal: [0], low: [0] };
 
 /** Editable fields for one reminder. Used for AI drafts, manual add and edit. */
-export function ReminderEditor({ value, onChange }: { value: ReminderInput; onChange: (v: ReminderInput) => void }) {
+export function ReminderEditor({ value, onChange, autoFocus }: { value: ReminderInput; onChange: (v: ReminderInput) => void; autoFocus?: boolean }) {
   const set = <K extends keyof ReminderInput>(k: K, v: ReminderInput[K]) => onChange({ ...value, [k]: v });
   const leads = value.leadTimes?.length ? value.leadTimes : DEFAULT_LEADS[value.priority];
 
@@ -19,7 +19,7 @@ export function ReminderEditor({ value, onChange }: { value: ReminderInput; onCh
     <div className="grid gap-3">
       <div>
         <label className={label}>Title</label>
-        <input className={field} value={value.title} onChange={(e) => set("title", e.target.value)} />
+        <input className={field} autoFocus={autoFocus} value={value.title} onChange={(e) => set("title", e.target.value)} />
       </div>
 
       <div className="grid grid-cols-2 gap-3">
