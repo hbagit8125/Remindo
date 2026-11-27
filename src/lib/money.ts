@@ -52,8 +52,17 @@ const inr2 = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR"
 
 /** ₹1,20,000 style. Shows paise only when there are some. */
 export function formatINR(paise: number) {
+  // "Hide amounts" (in the app only): every amount shows as ₹••••.
+  if (typeof window !== "undefined" && (globalThis as { __remindoHideAmounts?: boolean }).__remindoHideAmounts) return HIDDEN_AMOUNT;
+  return formatINRRaw(paise);
+}
+
+/** Always the real amount (messages you share, emails). */
+export function formatINRRaw(paise: number) {
   return paise % 100 === 0 ? inr0.format(paise / 100) : inr2.format(paise / 100);
 }
+
+export const HIDDEN_AMOUNT = "₹ ••••";
 
 /** Keyword → category guesses used by the offline parser. */
 export const CATEGORY_KEYWORDS: [RegExp, string][] = [

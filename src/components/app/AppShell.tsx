@@ -9,6 +9,7 @@ import { OfflineBanner } from "./OfflineBanner";
 import { LocationWatcher } from "./LocationWatcher";
 import { refreshAll } from "./client";
 import { SearchOverlay } from "./SearchOverlay";
+import { HideAmountsButton } from "./HideAmounts";
 import type { SheetMode } from "./AddSheet";
 import { SheetProvider, useSheet } from "./AddSheet";
 import { ToastProvider } from "./toast";
@@ -153,6 +154,7 @@ function Frame({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
         <div className="mt-auto space-y-1">
+          <HideAmountsButton withLabel className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-muted hover:bg-raised hover:text-fg" />
           <button onClick={theme.toggle} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-muted hover:bg-raised hover:text-fg">
             {theme.dark ? <Sun className="h-[18px] w-[18px]" /> : <Moon className="h-[18px] w-[18px]" />}
             {theme.dark ? "Light mode" : "Dark mode"}
@@ -176,6 +178,7 @@ function Frame({ children }: { children: React.ReactNode }) {
             <button onClick={() => setSearchOpen(true)} aria-label="Search" className="grid h-10 w-10 place-items-center rounded-xl text-muted hover:bg-raised">
               <Search className="h-5 w-5" />
             </button>
+            <HideAmountsButton />
             <button onClick={theme.toggle} aria-label="Toggle theme" className="grid h-10 w-10 place-items-center rounded-xl text-muted hover:bg-raised">
               {theme.dark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </button>

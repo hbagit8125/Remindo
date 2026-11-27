@@ -13,6 +13,7 @@ import { field, label } from "@/components/app/ReminderEditor";
 import { ACCOUNT_META, type Account, type AccountKind, type Due, type Goal } from "@/components/types";
 import { formatINR } from "@/lib/money";
 import { AutopayList } from "@/components/app/Autopay";
+import { HideAmountsButton } from "@/components/app/HideAmounts";
 
 
 export const primaryBtn = "flex items-center justify-center gap-2 rounded-xl bg-fg px-4 py-2.5 text-sm font-semibold text-[var(--bg)] hover:opacity-90 disabled:opacity-40";
@@ -119,8 +120,9 @@ export function AccountsScreen() {
         />
       ) : (
         <>
-          <div className="card mb-5 grid grid-cols-2 gap-3 rounded-3xl p-5">
-            <div>
+          <div className="card relative mb-5 grid grid-cols-2 gap-3 rounded-3xl p-5">
+            <HideAmountsButton className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-lg text-subtle hover:bg-raised hover:text-fg" />
+            <div className="relative">
               <p className="text-xs text-muted">You have</p>
               <p className={clsx("mt-1 text-2xl font-semibold tabular-nums", total < 0 && "text-rose-500")}>{formatINR(total)}</p>
               <p className="text-xs text-muted">in banks, cash &amp; wallets</p>
@@ -156,20 +158,18 @@ export function AccountsScreen() {
               ) : undefined
             }
           >
-            <div className="grid gap-2">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {money.map((a) => (
-                <button key={a.id} onClick={() => setEditing(a)} className="card flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left hover:bg-raised">
-                  <span className="grid h-10 w-10 place-items-center rounded-xl bg-raised text-lg">{ACCOUNT_META[a.kind].emoji}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">{a.name}</span>
-                    <span className="block text-xs text-muted">{ACCOUNT_META[a.kind].label}</span>
-                  </span>
-                  <span className={clsx("font-semibold tabular-nums", a.balancePaise < 0 && "text-rose-500")}>{formatINR(a.balancePaise)}</span>
-                  <Pencil className="h-4 w-4 text-subtle" />
-                </button>
+                <BalanceTile key={a.id} a={a} onOpen={() => setEditing(a)} />
               ))}
-              {!money.length && <p className="px-1 text-sm text-muted">Add the bank account you pay your card bills from.</p>}
+              <button
+                onClick={() => setEditing({ kind: "bank" })}
+                className="flex aspect-[5/4] flex-col items-center justify-center gap-1 rounded-3xl border-2 border-dashed border-line text-sm text-muted hover:bg-raised"
+              >
+                <Plus className="h-5 w-5" /> Add account
+              </button>
             </div>
+            {!money.length && <p className="mt-2 px-1 text-sm text-muted">Add the bank account you pay your card bills from.</p>}
           </Section>
           <AutopayList kind="emi" />
           {accounts.length >= 2 && (
@@ -187,6 +187,34 @@ export function AccountsScreen() {
       )}
       {editing && <AccountForm initial={editing} banks={money} cards={cards} onClose={() => setEditing(null)} />}
     </div>
+  );
+}
+
+const TILE: Record<string, string> = {
+  bank: "from-indigo-500/25 via-indigo-500/10",
+  cash: "from-emerald-500/25 via-emerald-500/10",
+  wallet: "from-fuchsia-500/25 via-fuchsia-500/10",
+  card: "from-amber-500/25 via-amber-500/10",
+};
+
+/** A balance at a glance: one square card per bank, cash or wallet. */
+function BalanceTile({ a, onOpen }: { a: Account; onOpen: () => void }) {
+  return (
+    <button
+      onClick={onOpen}
+      className="card relative flex aspect-[5/4] flex-col justify-between overflow-hidden rounded-3xl p-4 text-left transition hover:brightness-110 active:scale-[0.98]"
+    >
+      <span aria-hidden className={clsx("pointer-events-none absolute inset-0 bg-gradient-to-br to-transparent", TILE[a.kind] || TILE.bank)} />
+      <span className="relative flex items-start justify-between">
+        <span className="grid h-10 w-10 place-items-center rounded-2xl bg-surface/70 text-xl shadow-sm">{ACCOUNT_META[a.kind].emoji}</span>
+        <Pencil className="h-3.5 w-3.5 text-subtle" />
+      </span>
+      <span className="relative min-w-0">
+        <span className="block truncate text-sm font-medium">{a.name}</span>
+        <span className={clsx("block truncate text-xl font-semibold tabular-nums", a.balancePaise < 0 && "text-rose-500")}>{formatINR(a.balancePaise)}</span>
+        <span className="block text-[11px] text-muted">{ACCOUNT_META[a.kind].label}</span>
+      </span>
+    </button>
   );
 }
 
