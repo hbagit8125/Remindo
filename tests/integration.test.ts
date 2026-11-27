@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql", "drizzle/0010_savings.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -1094,6 +1094,55 @@ async function main() {
     [cardRow] = await db().select().from(accT).where(eq(accT.id, card.id));
     assert.equal(cardRow.reminderId, null);
     assert.equal((await db().select().from(reminders).where(eq(reminders.id, billR.id))).length, 0, "reminder removed");
+  }
+
+  // ---------------------------------------------------------------- Savings
+  {
+    const SV = await import("../src/lib/savings");
+    const U3 = await import("../src/lib/undo");
+    const { savingEntries: seT, savings: svT } = await import("../src/db");
+    const MP4 = await import("../src/lib/moneyplus");
+    const bank = (await MP4.listAccounts()).find((a) => a.name === "QA Bank")!;
+    const bankBefore = bank.balancePaise;
+    // FD of ₹1,00,000 paid from the bank, maturing in 2 months → reminder.
+    const fd = await SV.createSaving({ name: "QA FD", kind: "fd", institution: "SBI", ratePct: 7.1, maturityDate: local(60 * 24 * 60).date, startAmount: 100000, fromAccountId: bank.id });
+    let [fdRow] = await db().select().from(svT).where(eq(svT.id, fd.id));
+    assert.ok(fdRow.reminderId, "maturity reminder");
+    assert.equal((await MP4.listAccounts()).find((a) => a.id === bank.id)!.balancePaise, bankBefore - 10000000, "bank paid for the FD (transfer)");
+    const spentBefore = (await db().select().from(transactions).where(eq(transactions.type, "expense"))).length;
+    // Interest, a top-up and a withdrawal.
+    await SV.addEntry(fd.id, { type: "growth", amount: 1775, date: local(0).date, note: "Q3 interest" });
+    await SV.addEntry(fd.id, { type: "deposit", amount: 5000, date: local(0).date });
+    await SV.addEntry(fd.id, { type: "withdraw", amount: 2000, date: local(0).date, accountId: bank.id });
+    let d = (await SV.getSaving(fd.id))!;
+    assert.equal(d.valuePaise, (100000 + 1775 + 5000 - 2000) * 100);
+    assert.equal(d.growthPaise, 177500);
+    assert.equal(d.investedPaise, 103000 * 100);
+    assert.equal((await db().select().from(transactions).where(eq(transactions.type, "expense"))).length, spentBefore, "savings never count as spending");
+    await assert.rejects(() => SV.addEntry(fd.id, { type: "withdraw", amount: 999999, date: local(0).date }), /Only/);
+    // Mutual fund: "it's worth ₹X now" records the profit or loss.
+    const mf = await SV.createSaving({ name: "QA Index fund", kind: "mutual_fund", startAmount: 50000 });
+    await SV.addEntry(mf.id, { type: "value", amount: 56000, date: local(0).date });
+    await SV.addEntry(mf.id, { type: "value", amount: 54500, date: local(0).date });
+    d = (await SV.getSaving(mf.id))!;
+    assert.equal(d.valuePaise, 5450000);
+    assert.equal(d.growthPaise, 450000, "profit 6000 then loss 1500");
+    assert.equal(d.returnPct, 9);
+    assert.equal(d.entries.filter((e) => e.type === "growth" && e.amountPaise < 0).length, 1, "loss is a negative growth");
+    const all = await SV.listSavings();
+    assert.ok(all.total.valuePaise >= d.valuePaise + 10477500);
+    // Undo: delete the FD with its history → back; removing an entry also removes its bank transfer.
+    const { undoId } = await U3.track(() => SV.deleteSaving(fd.id));
+    assert.equal((await db().select().from(svT).where(eq(svT.id, fd.id))).length, 0);
+    await U3.undoActivity(undoId!);
+    assert.equal((await db().select().from(seT).where(eq(seT.savingId, fd.id))).length, 4, "FD and history back");
+    const wd = (await db().select().from(seT).where(and(eq(seT.savingId, fd.id), eq(seT.type, "withdraw"))))[0];
+    await SV.deleteEntry(wd.id);
+    assert.equal((await db().select().from(transactions).where(eq(transactions.id, wd.transactionId!))).length, 0, "linked transfer removed");
+    // Clearing the maturity date removes the reminder.
+    await SV.updateSaving(fd.id, { name: "QA FD", kind: "fd", maturityDate: null });
+    [fdRow] = await db().select().from(svT).where(eq(svT.id, fd.id));
+    assert.equal(fdRow.reminderId, null);
   }
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);

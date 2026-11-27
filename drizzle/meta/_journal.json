@@ -71,6 +71,13 @@
       "when": 1795750396709,
       "tag": "0009_credit_cards",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795750882512,
+      "tag": "0010_savings",
+      "breakpoints": true
     }
   ]
 }
