@@ -1331,6 +1331,19 @@ async function main() {
     await U4.undoActivity(lastUndo!);
     assert.equal((await db().select().from(apT2).where(eq(apT2.id, emi.id)))[0].active, true, "back on after undo");
 
+    // Paid early from a different account, or from "Other" (no balance changes).
+    const emi2 = await AP2.createAutopay({ kind: "emi", name: "QA Other-acct EMI", amount: 700, frequency: "monthly", day: Number(d5.slice(8)), accountId: bank2.id, totalCount: 5, paidBefore: 0, active: true });
+    const card2 = (await MP7.listAccounts()).find((a) => a.kind === "card")!;
+    await AP2.payEarly(emi2.id, null, new Date(), card2.id);
+    const [onCard] = await db().select().from(txT).where(and(eq(txT.accountId, card2.id), eq(txT.amountPaise, 70000)));
+    assert.equal(onCard.method, "card", "paid from the card this time");
+    const balBefore = (await MP7.listAccounts()).find((a) => a.id === bank2.id)!.balancePaise;
+    await AP2.payEarly(emi2.id, null, new Date(), null);
+    const other = (await db().select().from(txT).where(eq(txT.amountPaise, 70000))).find((t) => !t.accountId)!;
+    assert.ok(other, "Other: recorded with no account");
+    assert.equal((await MP7.listAccounts()).find((a) => a.id === bank2.id)!.balancePaise, balBefore, "usual bank untouched");
+    assert.equal((await AP2.listAutopays()).find((x) => x.id === emi2.id)!.paidCount, 2);
+
     // Unlink: the money was already in the fund.
     const SV4 = await import("../src/lib/savings");
     const atom = await SV4.createSaving({ name: "QA Atom", kind: "mutual_fund" });
