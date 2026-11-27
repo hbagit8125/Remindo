@@ -216,6 +216,8 @@ export type CardSummary = {
   unbilledPaise: number;
   status: "setup" | "nobill" | "due" | "overdue" | "paid";
   daysToDue: number | null;
+  sharedWith: string[];
+  limitOwedPaise: number;
 };
 export type Account = {
   id: string;
@@ -227,6 +229,7 @@ export type Account = {
   statementDay?: number | null;
   dueDay?: number | null;
   payFromId?: string | null;
+  sharedLimitId?: string | null;
   card?: CardSummary | null;
 };
 export const ACCOUNT_META: Record<AccountKind, { emoji: string; label: string }> = {

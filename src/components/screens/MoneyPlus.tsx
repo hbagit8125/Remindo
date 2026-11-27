@@ -183,7 +183,7 @@ export function AccountsScreen() {
           </p>
         </>
       )}
-      {editing && <AccountForm initial={editing} banks={money} onClose={() => setEditing(null)} />}
+      {editing && <AccountForm initial={editing} banks={money} cards={cards} onClose={() => setEditing(null)} />}
     </div>
   );
 }
@@ -220,6 +220,11 @@ function CreditCard({ a, onEdit, onPay }: { a: Account; onEdit: () => void; onPa
             <p className="mt-1 text-xs text-muted">
               {formatINR(Math.max(0, c.availablePaise || 0))} available of {formatINR(c.limitPaise)} · {used}% used
             </p>
+            {c.sharedWith.length > 0 && (
+              <p className="text-xs text-muted">
+                🔗 Limit shared with {c.sharedWith.join(", ")} · {formatINR(c.limitOwedPaise)} owed on both
+              </p>
+            )}
           </div>
         ) : null}
       </button>
@@ -293,7 +298,7 @@ export function SignedAmount({ value, onChange, negativeLabel, positiveLabel }: 
 const DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
 const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
 
-function AccountForm({ initial, banks, onClose }: { initial: Partial<Account>; banks: Account[]; onClose: () => void }) {
+function AccountForm({ initial, banks, cards, onClose }: { initial: Partial<Account>; banks: Account[]; cards: Account[]; onClose: () => void }) {
   const { busy, run } = useSubmit();
   const [name, setName] = useState(initial.name || "");
   const [kind, setKind] = useState<AccountKind>(initial.kind || "bank");
@@ -304,13 +309,18 @@ function AccountForm({ initial, banks, onClose }: { initial: Partial<Account>; b
   const [statementDay, setStatementDay] = useState<number | "">(initial.statementDay || "");
   const [dueDay, setDueDay] = useState<number | "">(initial.dueDay || "");
   const [payFromId, setPayFromId] = useState(initial.payFromId || "");
+  const [sharedLimitId, setSharedLimitId] = useState(initial.sharedLimitId || "");
+  const otherCards = cards.filter((c) => c.id !== initial.id);
+  const sharedCard = otherCards.find((c) => c.id === sharedLimitId);
+  const sharedLimit = sharedCard?.card?.limitPaise ?? sharedCard?.creditLimitPaise ?? null;
   const card = kind === "card";
   const body = card
     ? {
         name,
         kind,
         openingBalance: -(Number(owe) || 0),
-        creditLimit: Number(limit) || null,
+        creditLimit: sharedLimitId ? null : Number(limit) || null,
+        sharedLimitId: sharedLimitId || null,
         statementDay: statementDay || null,
         dueDay: dueDay || null,
         payFromId: payFromId || null,
@@ -346,9 +356,31 @@ function AccountForm({ initial, banks, onClose }: { initial: Partial<Account>; b
               </div>
               <div>
                 <label className={label}>Credit limit (₹)</label>
-                <input className={field} type="text" inputMode="decimal" placeholder="Optional" value={limit} onChange={(e) => setLimit(e.target.value.replace(/[^\d.]/g, ""))} />
+                {sharedLimitId ? (
+                  <div className={clsx(field, "flex items-center text-muted")}>{sharedLimit ? `${formatINR(sharedLimit)} (shared)` : "Shared"}</div>
+                ) : (
+                  <input className={field} type="text" inputMode="decimal" placeholder="Optional" value={limit} onChange={(e) => setLimit(e.target.value.replace(/[^\d.]/g, ""))} />
+                )}
               </div>
             </div>
+            {otherCards.length > 0 && (
+              <div>
+                <label className={label}>Limit</label>
+                <select className={field} value={sharedLimitId} onChange={(e) => setSharedLimitId(e.target.value)}>
+                  <option value="">Its own limit</option>
+                  {otherCards.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      Shares the limit with {c.name}
+                    </option>
+                  ))}
+                </select>
+                {sharedLimitId && (
+                  <p className="mt-1.5 text-xs text-muted">
+                    Both cards use one limit{sharedLimit ? ` of ${formatINR(sharedLimit)}` : ""}: what you spend on either lowers what&apos;s available on both. Bills and due dates stay separate.
+                  </p>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className={label}>Bill generated on</label>

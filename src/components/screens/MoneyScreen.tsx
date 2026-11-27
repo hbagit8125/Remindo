@@ -2,9 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { clsx } from "clsx";
-import { ChevronLeft, ChevronRight, Download, Plus, Search, Wallet, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Download, Plus, Search, Wallet, X } from "lucide-react";
 import { monthKey, monthLabel, relativeDay, shiftMonth, useData, useHidden } from "@/components/app/client";
-import { Empty, PageTitle, Section, SkeletonList, TxItem, useNow } from "@/components/app/rows";
+import { Empty, PageTitle, SkeletonList, TxItem, useNow } from "@/components/app/rows";
 import { useSheet } from "@/components/app/AddSheet";
 import { categoryMeta, type Transaction } from "@/components/types";
 import { formatINR, TOTAL_BUDGET } from "@/lib/money";
@@ -38,6 +38,8 @@ export function MoneyScreen() {
   const [month, setMonth] = useState(() => monthKey(new Date()));
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState<string | null>(null);
+  /** Days you opened or closed (the rest: latest two open, older closed). */
+  const [openDays, setOpenDays] = useState<Record<string, boolean>>({});
   const { data, loading } = useData<{ transactions: Transaction[] }>(`/api/transactions?month=${month}`);
   const budgets = useData<{ budgets: Record<string, number> }>("/api/budgets");
 
@@ -54,6 +56,7 @@ export function MoneyScreen() {
     return [t.note, t.merchant, t.category, String(t.amountPaise / 100)].some((v) => v?.toLowerCase().includes(q));
   });
 
+  const searching = Boolean(query || cat);
   const groups = new Map<string, Transaction[]>();
   for (const t of filtered) groups.set(t.date, [...(groups.get(t.date) || []), t]);
 
@@ -165,17 +168,60 @@ export function MoneyScreen() {
       ) : !filtered.length ? (
         <p className="py-10 text-center text-sm text-muted">No matches.</p>
       ) : (
-        [...groups.entries()].map(([date, list]) => {
-          const dayTotal = list.filter((t) => t.type === "expense").reduce((s, t) => s + t.amountPaise, 0);
-          return (
-            <Section key={date} title={relativeDay(date, now)} right={dayTotal ? formatINR(dayTotal) : undefined}>
-              {list.map((t) => (
-                <TxItem key={t.id} t={t} />
-              ))}
-            </Section>
-          );
-        })
+        <>
+          {groups.size > 2 && !searching && (
+            <div className="-mt-1 mb-2 flex justify-end gap-3 px-1 text-xs font-medium text-indigo-500">
+              <button onClick={() => setOpenDays(Object.fromEntries([...groups.keys()].map((d) => [d, true])))}>Expand all</button>
+              <button onClick={() => setOpenDays(Object.fromEntries([...groups.keys()].map((d) => [d, false])))}>Collapse all</button>
+            </div>
+          )}
+          {[...groups.entries()].map(([date, list], i) => (
+            <DayGroup
+              key={date}
+              title={relativeDay(date, now)}
+              list={list}
+              // Searching shows every match; otherwise the latest two days start open.
+              open={searching || (openDays[date] ?? i < 2)}
+              onToggle={() => setOpenDays((o) => ({ ...o, [date]: !(o[date] ?? i < 2) }))}
+            />
+          ))}
+        </>
       )}
     </div>
+  );
+}
+
+/** One day of entries. Closed: a single line with the count and totals; tap to open. */
+function DayGroup({ title, list, open, onToggle }: { title: string; list: Transaction[]; open: boolean; onToggle: () => void }) {
+  const spent = list.filter((t) => t.type === "expense").reduce((s, t) => s + t.amountPaise, 0);
+  const got = list.filter((t) => t.type === "income").reduce((s, t) => s + t.amountPaise, 0);
+  return (
+    <section className={open ? "mb-6" : "mb-2"}>
+      <button
+        onClick={onToggle}
+        aria-expanded={open}
+        className={clsx(
+          "flex w-full items-center gap-2 text-left transition",
+          open ? "mb-2 px-1" : "card rounded-2xl px-4 py-3 hover:bg-raised",
+        )}
+      >
+        <ChevronDown className={clsx("h-4 w-4 shrink-0 text-subtle transition-transform", !open && "-rotate-90")} />
+        <span className={clsx("flex-1", open ? "text-xs font-semibold uppercase tracking-wider text-subtle" : "text-sm font-medium")}>
+          {title}
+          {!open && <span className="font-normal text-muted"> · {list.length} {list.length === 1 ? "entry" : "entries"}</span>}
+        </span>
+        <span className="text-xs font-medium tabular-nums text-muted">
+          {spent ? formatINR(spent) : ""}
+          {got ? <span className="text-emerald-600 dark:text-emerald-400">{spent ? " · " : ""}+{formatINR(got)}</span> : null}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-2">
+          {list.map((t) => (
+            <TxItem key={t.id} t={t} />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

@@ -71,6 +71,20 @@
       "when": 1795750396709,
       "tag": "0009_credit_cards",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795750882512,
+      "tag": "0010_savings",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795751323103,
+      "tag": "0011_shared_card_limit",
+      "breakpoints": true
     }
   ]
 }
