@@ -35,6 +35,10 @@ export type CardSummary = {
   unbilledPaise: number;
   status: CardStatus;
   daysToDue: number | null;
+  /** Other cards using the same limit (names). */
+  sharedWith: string[];
+  /** Owed across all cards on this limit. */
+  limitOwedPaise: number;
 };
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -69,7 +73,11 @@ function effect(t: Tx, cardId: string) {
   return 0;
 }
 
-export function summarize(card: Pick<Account, "id" | "openingBalancePaise" | "creditLimitPaise" | "statementDay" | "dueDay">, txs: Tx[], today: string): CardSummary {
+export function summarize(
+  card: Pick<Account, "id" | "openingBalancePaise" | "creditLimitPaise" | "statementDay" | "dueDay">,
+  txs: Tx[],
+  today: string,
+): Omit<CardSummary, "sharedWith" | "limitOwedPaise"> {
   const mine = txs.filter((t) => t.accountId === card.id || t.toAccountId === card.id);
   const opening = -card.openingBalancePaise; // stored as a (negative) balance
   const outstanding = opening + mine.reduce((s, t) => s + effect(t, card.id), 0);
@@ -109,7 +117,47 @@ export async function cardSummaries(today = todayStr()) {
     .select({ type: transactions.type, amountPaise: transactions.amountPaise, date: transactions.date, accountId: transactions.accountId, toAccountId: transactions.toAccountId })
     .from(transactions)
     .where(or(inArray(transactions.accountId, ids), inArray(transactions.toAccountId, ids)));
-  return new Map(cards.map((c) => [c.id, summarize(c, txs, today)]));
+  const own = new Map(cards.map((c) => [c.id, summarize(c, txs, today)]));
+  return withSharedLimits(cards, own);
+}
+
+/** The card that holds the limit (follows "shares with" links; ignores loops and removed cards). */
+function limitRoot(card: Account, byId: Map<string, Account>) {
+  let cur = card;
+  const seen = new Set([card.id]);
+  while (cur.sharedLimitId && byId.has(cur.sharedLimitId) && !seen.has(cur.sharedLimitId)) {
+    cur = byId.get(cur.sharedLimitId)!;
+    seen.add(cur.id);
+  }
+  return cur;
+}
+
+/** Cards on one limit: the limit, what's available and % used are worked out from all of them together. */
+export function withSharedLimits(cards: Account[], own: Map<string, Omit<CardSummary, "sharedWith" | "limitOwedPaise">>) {
+  const byId = new Map(cards.map((c) => [c.id, c]));
+  const groups = new Map<string, Account[]>();
+  for (const c of cards) {
+    const root = limitRoot(c, byId).id;
+    groups.set(root, [...(groups.get(root) || []), c]);
+  }
+  const out = new Map<string, CardSummary>();
+  for (const [rootId, members] of groups) {
+    const limit = byId.get(rootId)!.creditLimitPaise ?? null;
+    const owed = members.reduce((t, m) => t + Math.max(0, own.get(m.id)!.outstandingPaise), 0);
+    for (const m of members) {
+      const s = own.get(m.id)!;
+      const shared = members.length > 1;
+      out.set(m.id, {
+        ...s,
+        limitPaise: limit,
+        availablePaise: limit !== null ? limit - (shared ? owed : s.outstandingPaise) : null,
+        usedPct: limit ? Math.round(((shared ? owed : Math.max(0, s.outstandingPaise)) / limit) * 100) : null,
+        sharedWith: members.filter((x) => x.id !== m.id).map((x) => x.name),
+        limitOwedPaise: shared ? owed : Math.max(0, s.outstandingPaise),
+      });
+    }
+  }
+  return out;
 }
 
 // ------------------------------------------------------------- the monthly "Pay the bill" reminder
@@ -213,3 +261,17 @@ export const cardLine = (name: string, s: CardSummary) =>
   s.status === "due" || s.status === "overdue"
     ? `💳 ${name}: ${formatINR(s.duePaise)} ${s.status === "overdue" ? "overdue" : `due ${s.daysToDue === 0 ? "today" : s.daysToDue === 1 ? "tomorrow" : `in ${s.daysToDue} days`}`}`
     : null;
+
+/** Check "shares its limit with": must be another active card; points at the card that holds the limit. */
+export async function cleanSharedLimit(selfId: string | null, sharedLimitId: string | null | undefined) {
+  if (!sharedLimitId || sharedLimitId === selfId) return null;
+  const cards = await db()
+    .select()
+    .from(accounts)
+    .where(and(eq(accounts.kind, "card"), eq(accounts.archived, false)));
+  const byId = new Map(cards.map((c) => [c.id, c]));
+  const target = byId.get(sharedLimitId);
+  if (!target) return null;
+  const root = limitRoot(target, byId);
+  return root.id === selfId ? null : root.id;
+}

@@ -124,6 +124,8 @@ export const accounts = pgTable("accounts", {
   // Credit cards: limit, the day the bill is generated, the day it must be paid, where you pay it from,
   // and the monthly "Pay the bill" reminder.
   creditLimitPaise: integer("credit_limit_paise"),
+  /** Cards from the same bank often share one limit: the card whose limit this one uses. */
+  sharedLimitId: uuid("shared_limit_id"),
   statementDay: integer("statement_day"),
   dueDay: integer("due_day"),
   payFromId: uuid("pay_from_id"),

@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql", "drizzle/0010_savings.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql", "drizzle/0010_savings.sql", "drizzle/0011_shared_card_limit.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -1143,6 +1143,31 @@ async function main() {
     await SV.updateSaving(fd.id, { name: "QA FD", kind: "fd", maturityDate: null });
     [fdRow] = await db().select().from(svT).where(eq(svT.id, fd.id));
     assert.equal(fdRow.reminderId, null);
+  }
+
+  // ---------------------------------------------------------------- Two cards on one limit
+  {
+    const CD2 = await import("../src/lib/cards");
+    const ACR2 = await import("../src/app/api/accounts/route");
+    const mk = async (body: object) => (await (await ACR2.POST(new Request("https://x", { method: "POST", body: JSON.stringify(body) }))).json()).account;
+    const a = await mk({ name: "QA Amazon card", kind: "card", openingBalance: -30000, creditLimit: 100000 });
+    const b = await mk({ name: "QA Flipkart card", kind: "card", openingBalance: -20000, creditLimit: 99999, sharedLimitId: a.id });
+    assert.equal(b.creditLimitPaise, null, "sharing card keeps no limit of its own");
+    const c = await mk({ name: "QA Third card", kind: "card", openingBalance: 0, sharedLimitId: b.id });
+    assert.equal(c.sharedLimitId, a.id, "points at the card that holds the limit");
+    const sums = await CD2.cardSummaries();
+    for (const id of [a.id, b.id, c.id]) {
+      const sm = sums.get(id)!;
+      assert.equal(sm.limitPaise, 10000000);
+      assert.equal(sm.availablePaise, 5000000, "available counts both cards");
+      assert.equal(sm.usedPct, 50);
+      assert.equal(sm.sharedWith.length, 2);
+    }
+    assert.equal(sums.get(a.id)!.outstandingPaise, 3000000, "each card still has its own balance");
+    // A card can't share with itself.
+    const ACI2 = await import("../src/app/api/accounts/[id]/route");
+    const self = await (await ACI2.PATCH(new Request("https://x", { method: "PATCH", body: JSON.stringify({ name: "QA Amazon card", kind: "card", openingBalance: -30000, creditLimit: 100000, sharedLimitId: a.id }) }), { params: Promise.resolve({ id: a.id }) })).json();
+    assert.equal(self.account.sharedLimitId, null);
   }
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
