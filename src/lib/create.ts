@@ -46,6 +46,8 @@ export async function createTransactions(items: TransactionInput[]) {
     async (rec) => {
       const created = await db().insert(transactions).values(fixed.map(inputToTxRow)).returning();
       rec(removed("transactions", created.map((t) => t.id)));
+      // Card spend / bill payment → refresh that card's bill and reminder.
+      await import("./cards").then((m) => m.syncCardsFor(created.flatMap((t) => [t.accountId, t.toAccountId]))).catch(() => null);
       await checkBudgetAlerts(created.filter((t) => t.type === "expense").map((t) => monthOf(t.date))).catch(() => null);
       return created;
     },

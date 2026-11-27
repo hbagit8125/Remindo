@@ -121,9 +121,18 @@ export const accounts = pgTable("accounts", {
   name: text("name").notNull(),
   kind: text("kind").notNull().default("bank"), // bank | card | cash | wallet
   openingBalancePaise: integer("opening_balance_paise").notNull().default(0),
+  // Credit cards: limit, the day the bill is generated, the day it must be paid, where you pay it from,
+  // and the monthly "Pay the bill" reminder.
+  creditLimitPaise: integer("credit_limit_paise"),
+  statementDay: integer("statement_day"),
+  dueDay: integer("due_day"),
+  payFromId: uuid("pay_from_id"),
+  reminderId: uuid("reminder_id"),
   archived: boolean("archived").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export type Account = typeof accounts.$inferSelect;
 
 /** One-tap entries like "Chai ₹20". payload is a TransactionInput without the date. */
 export const favourites = pgTable("favourites", {
