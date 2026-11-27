@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -1017,6 +1017,83 @@ async function main() {
   assert.match(page1, /Undo/, "email page offers Undo");
   await AR.POST(new Request(`https://x/api/action?t=${encodeURIComponent(undoT)}`, { method: "POST" }));
   assert.equal((await db().select().from(reminders).where(eq(reminders.id, emR.id)))[0].status, "active", "email Undo works");
+  }
+
+  // ---------------------------------------------------------------- Credit cards
+  {
+    const U2 = await import("../src/lib/undo");
+    const { completions } = await import("../src/db");
+    const CD = await import("../src/lib/cards");
+    // Bill on the 20th, pay by the 5th (next month).
+    assert.deepEqual(CD.cycleDates(20, 5, "2026-11-27"), { last: "2026-11-20", next: "2026-12-20", due: "2026-12-05" });
+    assert.deepEqual(CD.cycleDates(20, 5, "2026-11-10"), { last: "2026-10-20", next: "2026-11-20", due: "2026-11-05" });
+    // Bill on the 31st clamps to short months; due later the same month.
+    assert.deepEqual(CD.cycleDates(31, 15, "2026-03-01"), { last: "2026-02-28", next: "2026-03-31", due: "2026-03-15" });
+    assert.deepEqual(CD.cycleDates(1, 21, "2026-01-01"), { last: "2026-01-01", next: "2026-02-01", due: "2026-01-21" });
+    const fake = { id: "c", openingBalancePaise: -100000, creditLimitPaise: 5000000, statementDay: 20, dueDay: 5 };
+    const t = (type: string, amt: number, date: string, to = false) => ({ type, amountPaise: amt * 100, date, accountId: to ? "bank" : "c", toAccountId: to ? "c" : null });
+    const sum = CD.summarize(fake, [t("expense", 2000, "2026-11-10"), t("expense", 500, "2026-11-25"), t("transfer", 1000, "2026-11-26", true)], "2026-11-27");
+    assert.equal(sum.billPaise, 300000, "bill = owed at statement (1000 opening + 2000)");
+    assert.equal(sum.duePaise, 200000, "part-paid");
+    assert.equal(sum.unbilledPaise, 50000);
+    assert.equal(sum.outstandingPaise, 250000);
+    assert.equal(sum.availablePaise, 5000000 - 250000);
+    assert.equal(sum.status, "due");
+    assert.equal(CD.summarize(fake, [t("transfer", 1000, "2026-11-21", true)], "2026-11-27").status, "paid");
+    assert.equal(CD.summarize(fake, [], "2026-12-07").status, "overdue");
+    assert.equal(CD.summarize({ ...fake, statementDay: null, dueDay: null }, [], "2026-11-27").status, "setup");
+
+    // End to end: card with bill/due days gets a monthly reminder with the amount due.
+    const ACR = await import("../src/app/api/accounts/route");
+    const bankRes = await ACR.POST(new Request("https://x", { method: "POST", body: JSON.stringify({ name: "QA Bank", kind: "bank", openingBalance: 50000 }) }));
+    const bank = (await bankRes.json()).account;
+    const dayOf = (offset: number) => Number(local(60 * 24 * offset).date.slice(8, 10));
+    const cardRes = await ACR.POST(
+      new Request("https://x", { method: "POST", body: JSON.stringify({ name: "QA Card", kind: "card", openingBalance: 0, creditLimit: 100000, statementDay: dayOf(-5), dueDay: dayOf(10), payFromId: bank.id }) }),
+    );
+    const card = (await cardRes.json()).account;
+    const { accounts: accT } = await import("../src/db");
+    let [cardRow] = await db().select().from(accT).where(eq(accT.id, card.id));
+    assert.ok(cardRow.reminderId, "bill reminder created");
+    // Spend before the bill date (on this bill) and today (next bill).
+    await ct2([
+      { type: "expense", amount: 3000, category: "Shopping", note: "QA card old", date: local(-60 * 24 * 40).date, accountId: card.id },
+      { type: "expense", amount: 700, category: "Food", note: "QA card new", date: local(0).date, accountId: card.id },
+    ]);
+    const s1 = (await CD.cardSummaries()).get(card.id)!;
+    assert.equal(s1.billPaise, 300000);
+    assert.equal(s1.unbilledPaise, 70000);
+    assert.equal(s1.status, "due");
+    const [billR] = await db().select().from(reminders).where(eq(reminders.id, cardRow.reminderId!));
+    assert.equal(billR.amountPaise, 300000, "reminder shows the amount due");
+    assert.equal(billR.title, "Pay QA Card bill");
+    // "Log paid" on the reminder = transfer from the bank to the card, not new spending.
+    const { localToUtc } = await import("../src/lib/time");
+    const occ = localToUtc(s1.dueDate!, "10:00");
+    const FN = await import("../src/lib/finance");
+    const { undoId: payUndo } = await U2.track(() => FN.logReminderPayment(billR.id, occ));
+    const [payTx] = await db().select().from(transactions).where(eq(transactions.reminderId, billR.id));
+    assert.equal(payTx.type, "transfer", "card bill payment is a transfer");
+    assert.equal(payTx.accountId, bank.id);
+    assert.equal(payTx.toAccountId, card.id);
+    const s2 = (await CD.cardSummaries()).get(card.id)!;
+    assert.equal(s2.status, "paid");
+    assert.equal(s2.outstandingPaise, 70000, "only the new spend is owed");
+    assert.equal((await db().select().from(completions).where(and(eq(completions.reminderId, billR.id), eq(completions.occurrenceAt, occ)))).length, 1, "this month ticked off");
+    const MP3 = await import("../src/lib/moneyplus");
+    const listed = (await MP3.listAccounts()).find((a) => a.id === card.id)!;
+    assert.equal(listed.card?.status, "paid");
+    assert.equal((await MP3.listAccounts()).find((a) => a.id === bank.id)!.balancePaise, 5000000 - 300000, "bank paid it");
+    // Undo the payment → bill due again and the tick is gone.
+    await U2.undoActivity(payUndo!);
+    assert.equal((await CD.cardSummaries()).get(card.id)!.status, "due");
+    assert.equal((await db().select().from(completions).where(and(eq(completions.reminderId, billR.id), eq(completions.occurrenceAt, occ)))).length, 0, "untick on undo");
+    // Turning it into a bank account removes the bill reminder.
+    const ACI = await import("../src/app/api/accounts/[id]/route");
+    await ACI.PATCH(new Request("https://x", { method: "PATCH", body: JSON.stringify({ name: "QA Card", kind: "bank", openingBalance: 0 }) }), { params: Promise.resolve({ id: card.id }) });
+    [cardRow] = await db().select().from(accT).where(eq(accT.id, card.id));
+    assert.equal(cardRow.reminderId, null);
+    assert.equal((await db().select().from(reminders).where(eq(reminders.id, billR.id))).length, 0, "reminder removed");
   }
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);

@@ -15,7 +15,26 @@ export const accountInputSchema = z.object({
   name: z.string().trim().min(1).max(60),
   kind: z.enum(ACCOUNT_KINDS).default("bank"),
   openingBalance: z.coerce.number().min(-100_000_000).max(100_000_000).default(0),
+  // Credit cards only.
+  creditLimit: z.coerce.number().min(0).max(100_000_000).nullish(),
+  statementDay: z.coerce.number().int().min(1).max(31).nullish(),
+  dueDay: z.coerce.number().int().min(1).max(31).nullish(),
+  payFromId: z.string().uuid().nullish(),
 });
+
+/** Columns for an account from the form. Card fields are cleared for other kinds. */
+export function accountRow(d: z.infer<typeof accountInputSchema>) {
+  const card = d.kind === "card";
+  return {
+    name: d.name,
+    kind: d.kind,
+    openingBalancePaise: toPaise(d.openingBalance),
+    creditLimitPaise: card && d.creditLimit ? toPaise(d.creditLimit) : null,
+    statementDay: card ? d.statementDay || null : null,
+    dueDay: card ? d.dueDay || null : null,
+    payFromId: card ? d.payFromId || null : null,
+  };
+}
 
 /** Accounts with current balances (opening + income − expenses ± transfers). */
 export async function listAccounts() {
@@ -30,13 +49,14 @@ export async function listAccounts() {
     })
     .from(transactions)
     .groupBy(transactions.accountId, transactions.toAccountId, transactions.type);
+  const cards = rows.some((a) => a.kind === "card") ? await import("./cards").then((m) => m.cardSummaries()) : new Map();
   return rows.map((a) => {
     let bal = a.openingBalancePaise;
     for (const s of sums) {
       if (s.accountId === a.id) bal += s.type === "income" ? s.total : -s.total;
       if (s.type === "transfer" && s.toAccountId === a.id) bal += s.total;
     }
-    return { ...a, balancePaise: bal };
+    return { ...a, balancePaise: bal, card: cards.get(a.id) ?? null };
   });
 }
 

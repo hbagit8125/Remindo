@@ -19,7 +19,7 @@ const monthDay = z
   }, "That date doesn't exist");
 
 /** Create or replace the reminder behind a document/person/medicine. */
-async function upsertReminder(id: string | null, input: ReminderInput, meta?: Record<string, unknown>) {
+export async function upsertReminder(id: string | null, input: ReminderInput, meta?: Record<string, unknown>) {
   const u = await import("./undo");
   return u.recorded({ title: null, kind: "edit" }, async (rec) => upsertReminderInner(id, input, meta, rec));
 }
@@ -48,7 +48,7 @@ async function upsertReminderInner(id: string | null, input: ReminderInput, meta
   return r.id;
 }
 
-async function deleteReminder(id: string | null) {
+export async function deleteReminder(id: string | null) {
   if (!id) return;
   const u = await import("./undo");
   await u.recorded({ title: null, kind: "delete" }, async (rec) => {

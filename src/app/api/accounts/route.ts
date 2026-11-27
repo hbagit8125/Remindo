@@ -1,8 +1,8 @@
 import { connection, NextResponse } from "next/server";
 import { db, accounts } from "@/db";
-import { accountInputSchema, listAccounts } from "@/lib/moneyplus";
-import { toPaise } from "@/lib/money";
+import { accountInputSchema, accountRow, listAccounts } from "@/lib/moneyplus";
 import { withUndo } from "@/lib/undo-route";
+import { syncCardReminder } from "@/lib/cards";
 import { recorded, removed } from "@/lib/undo";
 
 export async function GET() {
@@ -16,9 +16,11 @@ export const POST = withUndo(async (req: Request) => {
   const a = await recorded({ title: `Added account “${p.data.name}”`, kind: "add" }, async (rec) => {
     const [row] = await db()
       .insert(accounts)
-      .values({ name: p.data.name, kind: p.data.kind, openingBalancePaise: toPaise(p.data.openingBalance) })
+      .values(accountRow(p.data))
       .returning();
     rec(removed("accounts", [row.id]));
+    // Credit card with bill/due days → monthly "Pay the bill" reminder.
+    await syncCardReminder(row.id);
     return row;
   });
   return NextResponse.json({ account: a });

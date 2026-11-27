@@ -154,6 +154,35 @@ export async function logReminderPayment(reminderId: string, occurrenceAt: Date)
   if (existing) return { transaction: existing, already: true };
   const { recorded, removed, money } = await import("./undo");
   const amountPaise = r.amountPaise;
+  // A credit card bill is paid from your bank to the card: a transfer, not new spending.
+  const meta = r.meta as { kind?: string; id?: string } | null;
+  if (meta?.kind === "card" && meta.id) {
+    const { accounts } = await import("@/db");
+    const cards = await import("./cards");
+    const [card] = await db().select().from(accounts).where(eq(accounts.id, meta.id));
+    if (card) {
+      const from = await cards.payFromAccount(card);
+      return recorded({ title: `Paid ${card.name} bill ${money(amountPaise)}`, kind: "add" }, async (rec) => {
+        const [tx] = await db()
+          .insert(transactions)
+          .values({
+            type: "transfer",
+            amountPaise,
+            category: "Transfer",
+            note: `${card.name} bill`,
+            date: today(),
+            accountId: from?.id ?? null,
+            toAccountId: card.id,
+            reminderId,
+            occurrenceAt,
+          })
+          .returning();
+        rec(removed("transactions", [tx.id]));
+        await cards.syncCardsFor([card.id]);
+        return { transaction: tx, already: false };
+      });
+    }
+  }
   return recorded({ title: `Logged ${money(amountPaise)} paid · ${r.title}`, kind: "add" }, async (rec) => {
   const [tx] = await db()
     .insert(transactions)

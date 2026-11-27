@@ -202,10 +202,36 @@ export type Task = {
 export type FocusTask = Task & { carried: boolean; overdue: boolean };
 
 export type AccountKind = "bank" | "card" | "cash" | "wallet";
-export type Account = { id: string; name: string; kind: AccountKind; openingBalancePaise: number; balancePaise: number };
+export type CardSummary = {
+  outstandingPaise: number;
+  limitPaise: number | null;
+  availablePaise: number | null;
+  usedPct: number | null;
+  lastStatement: string | null;
+  nextStatement: string | null;
+  dueDate: string | null;
+  billPaise: number;
+  paidPaise: number;
+  duePaise: number;
+  unbilledPaise: number;
+  status: "setup" | "nobill" | "due" | "overdue" | "paid";
+  daysToDue: number | null;
+};
+export type Account = {
+  id: string;
+  name: string;
+  kind: AccountKind;
+  openingBalancePaise: number;
+  balancePaise: number;
+  creditLimitPaise?: number | null;
+  statementDay?: number | null;
+  dueDay?: number | null;
+  payFromId?: string | null;
+  card?: CardSummary | null;
+};
 export const ACCOUNT_META: Record<AccountKind, { emoji: string; label: string }> = {
   bank: { emoji: "🏦", label: "Bank" },
-  card: { emoji: "💳", label: "Card" },
+  card: { emoji: "💳", label: "Credit card" },
   cash: { emoji: "💵", label: "Cash" },
   wallet: { emoji: "👛", label: "Wallet" },
 };

@@ -73,8 +73,19 @@ export function AccountsScreen() {
   const { data, loading } = useData<{ accounts: Account[] }>("/api/accounts");
   const [editing, setEditing] = useState<Partial<Account> | null>(null);
   const accounts = data?.accounts || [];
-  const total = accounts.filter((a) => a.kind !== "card").reduce((s, a) => s + a.balancePaise, 0);
-  const cardDue = accounts.filter((a) => a.kind === "card").reduce((s, a) => s + a.balancePaise, 0);
+  const money = accounts.filter((a) => a.kind !== "card");
+  const cards = accounts.filter((a) => a.kind === "card");
+  const total = money.reduce((s, a) => s + a.balancePaise, 0);
+  const owed = cards.reduce((s, a) => s + Math.max(0, a.card?.outstandingPaise ?? -a.balancePaise), 0);
+  const dueSoon = cards.filter((a) => a.card && (a.card.status === "due" || a.card.status === "overdue"));
+  const today = new Date().toLocaleDateString("en-CA");
+
+  /** Pay a card bill: a transfer from your bank to the card (not counted as spending again). */
+  const payBill = (c: Account) => {
+    const from = money.find((a) => a.id === c.payFromId) || money.find((a) => a.kind === "bank") || money[0];
+    const amount = (c.card?.duePaise || Math.max(0, c.card?.outstandingPaise || 0)) / 100;
+    open({ mode: "expense", value: { type: "transfer", amount, category: "Transfer", note: `${c.name} bill`, date: today, accountId: from?.id ?? null, toAccountId: c.id } });
+  };
 
   return (
     <div>
@@ -92,69 +103,222 @@ export function AccountsScreen() {
       ) : !accounts.length ? (
         <Empty
           icon={<Wallet className="h-6 w-6" />}
-          title="Track your balances"
-          text="Add your bank accounts, cards, cash and wallets with today's balance. Tag entries with an account and balances update automatically."
+          title="Track your balances and cards"
+          text="Add your bank accounts, cash, wallets and credit cards. Tag entries with an account and balances update by themselves. For cards, Remindo works out each bill and reminds you to pay it."
           action={
-            <button data-submit className={primaryBtn} onClick={() => setEditing({ kind: "bank" })}>
-              Add first account
-            </button>
+            <div className="flex flex-wrap justify-center gap-2">
+              <button data-submit className={primaryBtn} onClick={() => setEditing({ kind: "bank" })}>
+                Add bank account
+              </button>
+              <button className={ghostBtn} onClick={() => setEditing({ kind: "card" })}>
+                💳 Add credit card
+              </button>
+            </div>
           }
         />
       ) : (
         <>
           <div className="card mb-5 grid grid-cols-2 gap-3 rounded-3xl p-5">
             <div>
-              <p className="text-xs text-muted">Total balance</p>
+              <p className="text-xs text-muted">You have</p>
               <p className={clsx("mt-1 text-2xl font-semibold tabular-nums", total < 0 && "text-rose-500")}>{formatINR(total)}</p>
+              <p className="text-xs text-muted">in banks, cash &amp; wallets</p>
             </div>
-            {cardDue !== 0 && (
+            {cards.length > 0 && (
               <div>
-                <p className="text-xs text-muted">Card balance</p>
-                <p className={clsx("mt-1 text-2xl font-semibold tabular-nums", cardDue < 0 && "text-rose-500")}>{formatINR(cardDue)}</p>
+                <p className="text-xs text-muted">Cards owe</p>
+                <p className={clsx("mt-1 text-2xl font-semibold tabular-nums", owed > 0 && "text-rose-500")}>{formatINR(owed)}</p>
+                <p className="text-xs text-muted">
+                  {dueSoon.length ? `${formatINR(dueSoon.reduce((s, a) => s + a.card!.duePaise, 0))} bill due` : "No bill due"}
+                </p>
               </div>
             )}
           </div>
-          <Section title="Accounts">
-            {accounts.map((a) => (
-              <div key={a.id} className="card flex items-center gap-3 rounded-2xl px-4 py-3">
-                <span className="grid h-10 w-10 place-items-center rounded-xl bg-raised text-lg">{ACCOUNT_META[a.kind].emoji}</span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">{a.name}</span>
-                  <span className="block text-xs text-muted">{ACCOUNT_META[a.kind].label}</span>
-                </span>
-                <span className={clsx("font-semibold tabular-nums", a.balancePaise < 0 && "text-rose-500")}>{formatINR(a.balancePaise)}</span>
-                <button onClick={() => setEditing(a)} aria-label="Edit account" className="grid h-9 w-9 place-items-center rounded-lg text-subtle hover:bg-raised">
-                  <Pencil className="h-4 w-4" />
-                </button>
+
+          {cards.length > 0 && (
+            <Section title="Credit cards">
+              <div className="grid gap-3">
+                {cards.map((c) => (
+                  <CreditCard key={c.id} a={c} onEdit={() => setEditing(c)} onPay={() => payBill(c)} />
+                ))}
               </div>
-            ))}
+            </Section>
+          )}
+
+          <Section
+            title="Bank, cash & wallets"
+            right={
+              !cards.length ? (
+                <button onClick={() => setEditing({ kind: "card" })} className="text-indigo-500">
+                  + Credit card
+                </button>
+              ) : undefined
+            }
+          >
+            <div className="grid gap-2">
+              {money.map((a) => (
+                <button key={a.id} onClick={() => setEditing(a)} className="card flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left hover:bg-raised">
+                  <span className="grid h-10 w-10 place-items-center rounded-xl bg-raised text-lg">{ACCOUNT_META[a.kind].emoji}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{a.name}</span>
+                    <span className="block text-xs text-muted">{ACCOUNT_META[a.kind].label}</span>
+                  </span>
+                  <span className={clsx("font-semibold tabular-nums", a.balancePaise < 0 && "text-rose-500")}>{formatINR(a.balancePaise)}</span>
+                  <Pencil className="h-4 w-4 text-subtle" />
+                </button>
+              ))}
+              {!money.length && <p className="px-1 text-sm text-muted">Add the bank account you pay your card bills from.</p>}
+            </div>
           </Section>
           {accounts.length >= 2 && (
             <button
-              onClick={() => open({ mode: "expense", value: { type: "transfer", amount: 0, category: "Transfer", date: new Date().toLocaleDateString("en-CA"), accountId: accounts[0].id, toAccountId: accounts[1].id } })}
+              onClick={() => open({ mode: "expense", value: { type: "transfer", amount: 0, category: "Transfer", date: today, accountId: accounts[0].id, toAccountId: accounts[1].id } })}
               className={clsx(ghostBtn, "flex w-full items-center justify-center gap-2")}
             >
               <ArrowLeftRight className="h-4 w-4" /> Move money between accounts
             </button>
           )}
           <p className="mt-4 text-xs text-muted">
-            A balance here only counts entries tagged with that account. If it drifts from your bank app, edit the account and correct the starting balance.
+            Pick the card as the account when you spend with it. Paying the bill is a move from your bank to the card, so it never counts as spending twice. If a balance drifts from your bank app, edit the account and correct it.
           </p>
         </>
       )}
-      {editing && <AccountForm initial={editing} onClose={() => setEditing(null)} />}
+      {editing && <AccountForm initial={editing} banks={money} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-function AccountForm({ initial, onClose }: { initial: Partial<Account>; onClose: () => void }) {
+const shortDay = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+const inDays = (n: number) => (n === 0 ? "today" : n === 1 ? "tomorrow" : n < 0 ? `${-n} day${n === -1 ? "" : "s"} late` : `in ${n} days`);
+
+/** One credit card: what you owe, limit used, this month's bill and a Pay button. */
+function CreditCard({ a, onEdit, onPay }: { a: Account; onEdit: () => void; onPay: () => void }) {
+  const c = a.card;
+  const owe = c?.outstandingPaise ?? -a.balancePaise;
+  const used = c?.usedPct ?? null;
+  return (
+    <div className="card overflow-hidden rounded-3xl">
+      <button onClick={onEdit} className="block w-full bg-gradient-to-br from-indigo-500/15 via-fuchsia-500/10 to-transparent px-4 pb-3 pt-4 text-left">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate font-semibold">💳 {a.name}</p>
+            <p className="text-xs text-muted">{owe > 0 ? "You owe" : owe < 0 ? "Extra paid" : "Nothing owed"}</p>
+          </div>
+          <div className="text-right">
+            <p className={clsx("text-xl font-semibold tabular-nums", owe > 0 && "text-rose-500", owe < 0 && "text-emerald-600 dark:text-emerald-400")}>{formatINR(Math.abs(owe))}</p>
+            <Pencil className="ml-auto mt-1 h-3.5 w-3.5 text-subtle" />
+          </div>
+        </div>
+        {c?.limitPaise ? (
+          <div className="mt-3">
+            <div className="h-1.5 overflow-hidden rounded-full bg-raised">
+              <div
+                className={clsx("h-full rounded-full", used! >= 90 ? "bg-rose-500" : used! >= 30 ? "bg-amber-500" : "bg-emerald-500")}
+                style={{ width: `${Math.min(100, used || 0)}%` }}
+              />
+            </div>
+            <p className="mt-1 text-xs text-muted">
+              {formatINR(Math.max(0, c.availablePaise || 0))} available of {formatINR(c.limitPaise)} · {used}% used
+            </p>
+          </div>
+        ) : null}
+      </button>
+      <div className="flex items-center gap-3 border-t border-line px-4 py-3">
+        <div className="min-w-0 flex-1 text-sm">
+          {!c || c.status === "setup" ? (
+            <button onClick={onEdit} className="text-left text-indigo-500">
+              Add the bill day &amp; due day to track bills and get reminders
+            </button>
+          ) : c.status === "due" || c.status === "overdue" ? (
+            <>
+              <p className="font-medium">
+                Bill <span className="tabular-nums">{formatINR(c.duePaise)}</span>
+                {c.paidPaise > 0 && <span className="font-normal text-muted"> left of {formatINR(c.billPaise)}</span>}
+              </p>
+              <p className={clsx("text-xs", c.status === "overdue" ? "font-semibold text-rose-500" : c.daysToDue! <= 3 ? "text-amber-600" : "text-muted")}>
+                Due {shortDay(c.dueDate!)} ({inDays(c.daysToDue!)})
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-medium text-emerald-600 dark:text-emerald-400">{c.status === "paid" ? `✓ ${shortDay(c.lastStatement!)} bill paid` : "No bill this month"}</p>
+              <p className="text-xs text-muted">Next bill on {shortDay(c.nextStatement!)}</p>
+            </>
+          )}
+          {c && c.status !== "setup" && c.unbilledPaise > 0 && <p className="text-xs text-muted">{formatINR(c.unbilledPaise)} spent since the last bill</p>}
+        </div>
+        {owe > 0 && (
+          <button onClick={onPay} className={clsx(c?.status === "due" || c?.status === "overdue" ? primaryBtn : ghostBtn, "shrink-0 !px-3 !py-2")}>
+            Pay bill
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Amount box with a +/− switch: phone number pads have no minus key. */
+export function SignedAmount({ value, onChange, negativeLabel, positiveLabel }: { value: string; onChange: (v: string) => void; negativeLabel: string; positiveLabel: string }) {
+  const negative = value.trim().startsWith("-");
+  const abs = value.replace(/^-/, "");
+  return (
+    <div className="flex gap-2">
+      <div className="flex shrink-0 rounded-xl bg-raised p-1 text-xs font-medium">
+        {[false, true].map((neg) => (
+          <button
+            key={String(neg)}
+            type="button"
+            onClick={() => onChange(neg ? (abs ? `-${abs}` : "-") : abs)}
+            className={clsx("rounded-lg px-2.5 py-1.5", negative === neg ? (neg ? "bg-rose-500 text-white" : "bg-surface shadow-sm ring-1 ring-line") : "text-muted")}
+          >
+            {neg ? negativeLabel : positiveLabel}
+          </button>
+        ))}
+      </div>
+      <input
+        className={field}
+        type="text"
+        inputMode="decimal"
+        placeholder="0"
+        value={abs}
+        onChange={(e) => {
+          const v = e.target.value.replace(/[^\d.]/g, "");
+          onChange(negative ? `-${v}` : v);
+        }}
+      />
+    </div>
+  );
+}
+
+const DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
+const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
+
+function AccountForm({ initial, banks, onClose }: { initial: Partial<Account>; banks: Account[]; onClose: () => void }) {
   const { busy, run } = useSubmit();
   const [name, setName] = useState(initial.name || "");
   const [kind, setKind] = useState<AccountKind>(initial.kind || "bank");
   const [opening, setOpening] = useState(initial.openingBalancePaise != null ? String(initial.openingBalancePaise / 100) : "");
-  const body = { name, kind, openingBalance: Number(opening) || 0 };
+  // Cards: you type what you owe (a positive number); it's saved as a negative balance.
+  const [owe, setOwe] = useState(initial.openingBalancePaise != null ? String(Math.max(0, -initial.openingBalancePaise) / 100 || "") : "");
+  const [limit, setLimit] = useState(initial.creditLimitPaise ? String(initial.creditLimitPaise / 100) : "");
+  const [statementDay, setStatementDay] = useState<number | "">(initial.statementDay || "");
+  const [dueDay, setDueDay] = useState<number | "">(initial.dueDay || "");
+  const [payFromId, setPayFromId] = useState(initial.payFromId || "");
+  const card = kind === "card";
+  const body = card
+    ? {
+        name,
+        kind,
+        openingBalance: -(Number(owe) || 0),
+        creditLimit: Number(limit) || null,
+        statementDay: statementDay || null,
+        dueDay: dueDay || null,
+        payFromId: payFromId || null,
+      }
+    : { name, kind, openingBalance: Number(opening) || 0 };
+  const edit = Boolean(initial.id);
   return (
-    <Modal title={initial.id ? "Edit account" : "New account"} onClose={onClose}>
+    <Modal title={edit ? (card ? "Edit credit card" : "Edit account") : card ? "New credit card" : "New account"} onClose={onClose}>
       <div className="grid gap-4">
         <div className="grid grid-cols-4 gap-1.5">
           {(Object.keys(ACCOUNT_META) as AccountKind[]).map((k) => (
@@ -171,28 +335,87 @@ function AccountForm({ initial, onClose }: { initial: Partial<Account>; onClose:
         </div>
         <div>
           <label className={label}>Name</label>
-          <input className={field} autoFocus placeholder="e.g. SBI savings, HDFC card, Cash" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className={field} autoFocus placeholder={card ? "e.g. HDFC Millennia" : "e.g. SBI savings, Cash"} value={name} onChange={(e) => setName(e.target.value)} />
         </div>
-        <div>
-          <label className={label}>{initial.id ? "Starting balance" : "Balance today"} (₹){kind === "card" ? ": use a negative number for money owed" : ""}</label>
-          <input className={field} type="number" inputMode="decimal" value={opening} onChange={(e) => setOpening(e.target.value)} />
-        </div>
+        {card ? (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={label}>{edit ? "You owed when you started (₹)" : "You owe today (₹)"}</label>
+                <input className={field} type="text" inputMode="decimal" placeholder="0" value={owe} onChange={(e) => setOwe(e.target.value.replace(/[^\d.]/g, ""))} />
+              </div>
+              <div>
+                <label className={label}>Credit limit (₹)</label>
+                <input className={field} type="text" inputMode="decimal" placeholder="Optional" value={limit} onChange={(e) => setLimit(e.target.value.replace(/[^\d.]/g, ""))} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Bill generated on</label>
+                <select className={field} value={statementDay} onChange={(e) => setStatementDay(Number(e.target.value) || "")}>
+                  <option value="">Day of month…</option>
+                  {DAYS.map((d) => (
+                    <option key={d} value={d}>
+                      {ordinal(d)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className={label}>Pay by</label>
+                <select className={field} value={dueDay} onChange={(e) => setDueDay(Number(e.target.value) || "")}>
+                  <option value="">Day of month…</option>
+                  {DAYS.map((d) => (
+                    <option key={d} value={d}>
+                      {ordinal(d)}
+                      {statementDay && d <= statementDay ? " (next month)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {banks.length > 0 && (
+              <div>
+                <label className={label}>Pay the bill from</label>
+                <select className={field} value={payFromId} onChange={(e) => setPayFromId(e.target.value)}>
+                  <option value="">{banks.find((b) => b.kind === "bank")?.name || banks[0].name} (default)</option>
+                  {banks.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {ACCOUNT_META[b.kind].emoji} {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <p className="rounded-xl bg-indigo-500/10 px-3 py-2 text-xs text-indigo-800 dark:text-indigo-200">
+              {statementDay && dueDay
+                ? `Remindo works out each bill on the ${ordinal(statementDay)} and reminds you 3 days before, the day before and on the ${ordinal(dueDay)} with the amount due. Paying the bill ticks it off.`
+                : "Add the bill day and the pay-by day (they're on your card statement) to get the bill amount and a reminder every month."}
+            </p>
+          </>
+        ) : (
+          <div>
+            <label className={label}>{edit ? "Starting balance" : "Balance today"} (₹)</label>
+            <SignedAmount value={opening} onChange={setOpening} positiveLabel="In credit" negativeLabel="Overdrawn" />
+          </div>
+        )}
         <div className="flex gap-2">
           {initial.id && (
             <button
               className={clsx(ghostBtn, "text-rose-500")}
-              onClick={() => run(() => api(`/api/accounts/${initial.id}`, { method: "DELETE" }), "Account removed", onClose)}
+              onClick={() => run(() => api(`/api/accounts/${initial.id}`, { method: "DELETE" }), card ? "Card removed" : "Account removed", onClose)}
             >
               Remove
             </button>
           )}
-          <button data-submit
+          <button
+            data-submit
             className={clsx(primaryBtn, "flex-1")}
-            disabled={busy || !name.trim()}
+            disabled={busy || !name.trim() || (card && Boolean(statementDay) !== Boolean(dueDay))}
             onClick={() =>
               run(
                 () => (initial.id ? api(`/api/accounts/${initial.id}`, { method: "PATCH", json: body }) : api("/api/accounts", { method: "POST", json: body })),
-                initial.id ? "Account updated" : "Account added",
+                initial.id ? (card ? "Card updated" : "Account updated") : card ? "Card added 💳" : "Account added",
                 onClose,
               )
             }

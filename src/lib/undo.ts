@@ -301,6 +301,8 @@ export async function undoActivity(id: string, now = new Date()): Promise<UndoRe
     console.error("[remindo:undo] failed", e);
     return { ok: false, title: "Couldn't undo", message: "Something changed since then, so it can't be put back automatically." };
   }
+  // Card bills depend on entries: bring their amounts back in step.
+  await import("./cards").then((m) => m.syncAllCards()).catch(() => null);
   if (touched.size) {
     const { planAndQueue } = await import("./scheduler");
     const live = await db().select({ id: T.reminders.id }).from(T.reminders).where(inArray(T.reminders.id, [...touched]));
