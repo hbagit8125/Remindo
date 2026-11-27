@@ -124,6 +124,8 @@ export const accounts = pgTable("accounts", {
   // Credit cards: limit, the day the bill is generated, the day it must be paid, where you pay it from,
   // and the monthly "Pay the bill" reminder.
   creditLimitPaise: integer("credit_limit_paise"),
+  /** Cards from the same bank often share one limit: the card whose limit this one uses. */
+  sharedLimitId: uuid("shared_limit_id"),
   statementDay: integer("statement_day"),
   dueDay: integer("due_day"),
   payFromId: uuid("pay_from_id"),
@@ -385,3 +387,85 @@ export const activity = pgTable(
   (t) => [index("activity_created_idx").on(t.createdAt), index("activity_ref_idx").on(t.ref)],
 );
 export type Activity = typeof activity.$inferSelect;
+
+/**
+ * Savings & investments: FDs, RDs, mutual funds, stocks, gold, PPF… Each has a history of money put in,
+ * taken out, and growth (interest, profit, dividends; negative = a loss). Value = in − out + growth.
+ */
+export const savings = pgTable("savings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull().default("other"),
+  institution: text("institution"),
+  /** % a year, for FDs/RDs (shown only). */
+  ratePct: text("rate_pct"),
+  /** FD/RD maturity: a reminder a week before and on the day. */
+  maturityDate: text("maturity_date"),
+  reminderId: uuid("reminder_id"),
+  notes: text("notes"),
+  archived: boolean("archived").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type Saving = typeof savings.$inferSelect;
+
+export const savingEntries = pgTable(
+  "saving_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    savingId: uuid("saving_id").notNull(),
+    /** deposit | withdraw | growth (interest/profit; negative = loss) */
+    type: text("type").notNull(),
+    amountPaise: integer("amount_paise").notNull(),
+    date: text("date").notNull(),
+    note: text("note"),
+    /** The bank transfer this deposit/withdrawal made, if you picked an account. */
+    transactionId: uuid("transaction_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("saving_entries_saving_idx").on(t.savingId)],
+);
+export type SavingEntry = typeof savingEntries.$inferSelect;
+
+/**
+ * Automatic monthly payments: SIPs (bank → a saving) and EMIs (loan repayments, counted as spending).
+ * On the day, the payment is recorded from the chosen account by itself; if that account looks short
+ * the day before, you get a reminder.
+ */
+export const autopays = pgTable("autopays", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** sip | emi */
+  kind: text("kind").notNull(),
+  name: text("name").notNull(),
+  amountPaise: integer("amount_paise").notNull(),
+  /** Day of the month (31 = last day in shorter months). */
+  day: integer("day").notNull(),
+  accountId: uuid("account_id"),
+  /** SIP: the saving it goes into. */
+  savingId: uuid("saving_id"),
+  /** First payment date (yyyy-MM-dd). Nothing before this, or before it was added, is recorded. */
+  startDate: text("start_date").notNull(),
+  /** EMI: total number of EMIs, how many were paid before you added it, the loan amount and lender. */
+  totalCount: integer("total_count"),
+  paidBefore: integer("paid_before").notNull().default(0),
+  loanPaise: integer("loan_paise"),
+  lender: text("lender"),
+  active: boolean("active").notNull().default(true),
+  /** The low-balance reminder for the next payment, if one was made. */
+  alertReminderId: uuid("alert_reminder_id"),
+  alertFor: text("alert_for"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type Autopay = typeof autopays.$inferSelect;
+
+export const autopayRuns = pgTable(
+  "autopay_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    autopayId: uuid("autopay_id").notNull(),
+    dueDate: text("due_date").notNull(),
+    transactionId: uuid("transaction_id"),
+    savingEntryId: uuid("saving_entry_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("autopay_runs_once").on(t.autopayId, t.dueDate)],
+);

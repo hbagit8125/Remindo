@@ -653,6 +653,19 @@ export function restoreNames<T extends { dues: { person: string }[] }>(r: T, tex
 }
 
 export async function parsePrompt(text: string): Promise<ParseResult & { engine: string; warning?: string; errors?: string[] }> {
+  const r = await parsePromptInner(text);
+  // "lunch 200 on HDFC card" → pick that account (and UPI/card) for the entry.
+  try {
+    const { db, accounts } = await import("@/db");
+    const { eq } = await import("drizzle-orm");
+    const accs = await db().select({ id: accounts.id, name: accounts.name, kind: accounts.kind }).from(accounts).where(eq(accounts.archived, false));
+    return accs.length ? (await import("./account-match")).attachAccounts(r, text, accs) : r;
+  } catch {
+    return r;
+  }
+}
+
+async function parsePromptInner(text: string): Promise<ParseResult & { engine: string; warning?: string; errors?: string[] }> {
   categoryExtra = await import("./categories").then((m) => m.categoryHint()).catch(() => "");
   const errors: string[] = [];
   const valid = (engine: string, raw: unknown) => {

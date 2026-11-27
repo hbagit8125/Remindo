@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql", "drizzle/0010_savings.sql", "drizzle/0011_shared_card_limit.sql", "drizzle/0012_autopay.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -1094,6 +1094,145 @@ async function main() {
     [cardRow] = await db().select().from(accT).where(eq(accT.id, card.id));
     assert.equal(cardRow.reminderId, null);
     assert.equal((await db().select().from(reminders).where(eq(reminders.id, billR.id))).length, 0, "reminder removed");
+  }
+
+  // ---------------------------------------------------------------- Savings
+  {
+    const SV = await import("../src/lib/savings");
+    const U3 = await import("../src/lib/undo");
+    const { savingEntries: seT, savings: svT } = await import("../src/db");
+    const MP4 = await import("../src/lib/moneyplus");
+    const bank = (await MP4.listAccounts()).find((a) => a.name === "QA Bank")!;
+    const bankBefore = bank.balancePaise;
+    // FD of ₹1,00,000 paid from the bank, maturing in 2 months → reminder.
+    const fd = await SV.createSaving({ name: "QA FD", kind: "fd", institution: "SBI", ratePct: 7.1, maturityDate: local(60 * 24 * 60).date, startAmount: 100000, fromAccountId: bank.id });
+    let [fdRow] = await db().select().from(svT).where(eq(svT.id, fd.id));
+    assert.ok(fdRow.reminderId, "maturity reminder");
+    assert.equal((await MP4.listAccounts()).find((a) => a.id === bank.id)!.balancePaise, bankBefore - 10000000, "bank paid for the FD (transfer)");
+    const spentBefore = (await db().select().from(transactions).where(eq(transactions.type, "expense"))).length;
+    // Interest, a top-up and a withdrawal.
+    await SV.addEntry(fd.id, { type: "growth", amount: 1775, date: local(0).date, note: "Q3 interest" });
+    await SV.addEntry(fd.id, { type: "deposit", amount: 5000, date: local(0).date });
+    await SV.addEntry(fd.id, { type: "withdraw", amount: 2000, date: local(0).date, accountId: bank.id });
+    let d = (await SV.getSaving(fd.id))!;
+    assert.equal(d.valuePaise, (100000 + 1775 + 5000 - 2000) * 100);
+    assert.equal(d.growthPaise, 177500);
+    assert.equal(d.investedPaise, 103000 * 100);
+    assert.equal((await db().select().from(transactions).where(eq(transactions.type, "expense"))).length, spentBefore, "savings never count as spending");
+    await assert.rejects(() => SV.addEntry(fd.id, { type: "withdraw", amount: 999999, date: local(0).date }), /Only/);
+    // Mutual fund: "it's worth ₹X now" records the profit or loss.
+    const mf = await SV.createSaving({ name: "QA Index fund", kind: "mutual_fund", startAmount: 50000 });
+    await SV.addEntry(mf.id, { type: "value", amount: 56000, date: local(0).date });
+    await SV.addEntry(mf.id, { type: "value", amount: 54500, date: local(0).date });
+    d = (await SV.getSaving(mf.id))!;
+    assert.equal(d.valuePaise, 5450000);
+    assert.equal(d.growthPaise, 450000, "profit 6000 then loss 1500");
+    assert.equal(d.returnPct, 9);
+    assert.equal(d.entries.filter((e) => e.type === "growth" && e.amountPaise < 0).length, 1, "loss is a negative growth");
+    const all = await SV.listSavings();
+    assert.ok(all.total.valuePaise >= d.valuePaise + 10477500);
+    // Undo: delete the FD with its history → back; removing an entry also removes its bank transfer.
+    const { undoId } = await U3.track(() => SV.deleteSaving(fd.id));
+    assert.equal((await db().select().from(svT).where(eq(svT.id, fd.id))).length, 0);
+    await U3.undoActivity(undoId!);
+    assert.equal((await db().select().from(seT).where(eq(seT.savingId, fd.id))).length, 4, "FD and history back");
+    const wd = (await db().select().from(seT).where(and(eq(seT.savingId, fd.id), eq(seT.type, "withdraw"))))[0];
+    await SV.deleteEntry(wd.id);
+    assert.equal((await db().select().from(transactions).where(eq(transactions.id, wd.transactionId!))).length, 0, "linked transfer removed");
+    // Clearing the maturity date removes the reminder.
+    await SV.updateSaving(fd.id, { name: "QA FD", kind: "fd", maturityDate: null });
+    [fdRow] = await db().select().from(svT).where(eq(svT.id, fd.id));
+    assert.equal(fdRow.reminderId, null);
+  }
+
+  // ---------------------------------------------------------------- Two cards on one limit
+  {
+    const CD2 = await import("../src/lib/cards");
+    const ACR2 = await import("../src/app/api/accounts/route");
+    const mk = async (body: object) => (await (await ACR2.POST(new Request("https://x", { method: "POST", body: JSON.stringify(body) }))).json()).account;
+    const a = await mk({ name: "QA Amazon card", kind: "card", openingBalance: -30000, creditLimit: 100000 });
+    const b = await mk({ name: "QA Flipkart card", kind: "card", openingBalance: -20000, creditLimit: 99999, sharedLimitId: a.id });
+    assert.equal(b.creditLimitPaise, null, "sharing card keeps no limit of its own");
+    const c = await mk({ name: "QA Third card", kind: "card", openingBalance: 0, sharedLimitId: b.id });
+    assert.equal(c.sharedLimitId, a.id, "points at the card that holds the limit");
+    const sums = await CD2.cardSummaries();
+    for (const id of [a.id, b.id, c.id]) {
+      const sm = sums.get(id)!;
+      assert.equal(sm.limitPaise, 10000000);
+      assert.equal(sm.availablePaise, 5000000, "available counts both cards");
+      assert.equal(sm.usedPct, 50);
+      assert.equal(sm.sharedWith.length, 2);
+    }
+    assert.equal(sums.get(a.id)!.outstandingPaise, 3000000, "each card still has its own balance");
+    // A card can't share with itself.
+    const ACI2 = await import("../src/app/api/accounts/[id]/route");
+    const self = await (await ACI2.PATCH(new Request("https://x", { method: "PATCH", body: JSON.stringify({ name: "QA Amazon card", kind: "card", openingBalance: -30000, creditLimit: 100000, sharedLimitId: a.id }) }), { params: Promise.resolve({ id: a.id }) })).json();
+    assert.equal(self.account.sharedLimitId, null);
+  }
+
+  // ---------------------------------------------------------------- Paid with + SIPs/EMIs
+  {
+    const AM = await import("../src/lib/account-match");
+    const accs = [
+      { id: "sbi", name: "SBI savings", kind: "bank" },
+      { id: "hdfc", name: "HDFC Millennia", kind: "card" },
+      { id: "icici", name: "ICICI Amazon Pay card", kind: "card" },
+    ];
+    assert.deepEqual(AM.matchAccount("lunch 200 on hdfc card", accs), { accountId: "hdfc", method: "card" });
+    assert.deepEqual(AM.matchAccount("petrol 1500 from SBI via gpay", accs), { accountId: "sbi", method: "upi" });
+    assert.deepEqual(AM.matchAccount("amazon order 999 icici", accs), { accountId: "icici", method: "card" });
+    assert.deepEqual(AM.matchAccount("tea 20 cash", accs), { accountId: null, method: "cash" });
+    assert.deepEqual(AM.matchAccount("tea 20", accs), { accountId: null, method: null });
+    const r = AM.attachAccounts({ transactions: [{ type: "expense", amount: 200, category: "Food", date: local(0).date } as import("../src/lib/money").TransactionInput] }, "lunch 200 hdfc", accs);
+    assert.equal(r.transactions[0].accountId, "hdfc");
+
+    const AP = await import("../src/lib/autopay");
+    assert.deepEqual(AP.dueDates({ day: 31, startDate: "2026-01-15" }, "2026-01-01", "2026-04-30"), ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"]);
+    const { localToUtc } = await import("../src/lib/time");
+    const { autopays: apT, autopayRuns: runT, savingEntries: seT2 } = await import("../src/db");
+    const MP5 = await import("../src/lib/moneyplus");
+    const SV2 = await import("../src/lib/savings");
+    const ACR3 = await import("../src/app/api/accounts/route");
+    const bank = (await (await ACR3.POST(new Request("https://x", { method: "POST", body: JSON.stringify({ name: "QA Autopay Bank", kind: "bank", openingBalance: 3000 }) }))).json()).account;
+    const today = local(0).date;
+    const tomorrow = local(60 * 24).date;
+    const fund = await SV2.createSaving({ name: "QA SIP fund", kind: "mutual_fund" });
+    const sip = await AP.createAutopay({ kind: "sip", name: "QA SIP", amount: 5000, day: Number(tomorrow.slice(8)), accountId: bank.id, savingId: fund.id, paidBefore: 0, active: true });
+    // Tomorrow's SIP is ₹5,000 but the bank has ₹3,000 → a reminder today at 7pm to add ₹2,000.
+    await AP.checkAutopays(localToUtc(today, "09:00"));
+    let [sipRow] = await db().select().from(apT).where(eq(apT.id, sip.id));
+    assert.ok(sipRow.alertReminderId, "low-balance reminder made");
+    const [alertR] = await db().select().from(reminders).where(eq(reminders.id, sipRow.alertReminderId!));
+    assert.match(alertR.title, /Add ₹2,000 to QA Autopay Bank/);
+    assert.equal((await AP.listAutopays()).find((x) => x.id === sip.id)!.short, 200000);
+    // Top up → the reminder is withdrawn.
+    await ct2([{ type: "income", amount: 2500, category: "Salary", date: today, accountId: bank.id }]);
+    await AP.checkAutopays(localToUtc(today, "09:30"));
+    [sipRow] = await db().select().from(apT).where(eq(apT.id, sip.id));
+    assert.equal(sipRow.alertReminderId, null, "reminder withdrawn after top-up");
+    assert.equal((await db().select().from(reminders).where(eq(reminders.id, alertR.id))).length, 0);
+    // Nothing happens before 7am; on the day it's paid once (bank → saving, a transfer).
+    assert.equal((await AP.runAutopays(localToUtc(tomorrow, "06:00"))).length, 0, "waits until 7am");
+    const paid = await AP.runAutopays(localToUtc(tomorrow, "08:00"));
+    assert.equal(paid.filter((x) => x.label.includes("QA SIP")).length, 1);
+    assert.equal((await AP.runAutopays(localToUtc(tomorrow, "09:00"))).filter((x) => x.label.includes("QA SIP")).length, 0, "never twice");
+    assert.equal((await db().select().from(seT2).where(eq(seT2.savingId, fund.id))).length, 1);
+    assert.equal((await MP5.listAccounts()).find((a) => a.id === bank.id)!.balancePaise, 50000, "₹3,000 + ₹2,500 − ₹5,000");
+    const tgSent = tgCalls.filter((c) => c.method === "sendMessage").at(-1)!;
+    assert.match(String(tgSent.body.text), /Auto-paid/);
+    // EMI: 2 in total, 1 already paid → today's is the last; it's spending and then it stops.
+    const card = (await (await ACR3.POST(new Request("https://x", { method: "POST", body: JSON.stringify({ name: "QA EMI card", kind: "card", openingBalance: 0, creditLimit: 50000 }) }))).json()).account;
+    const emi = await AP.createAutopay({ kind: "emi", name: "QA Phone", amount: 2000, day: Number(today.slice(8)), accountId: card.id, totalCount: 2, paidBefore: 1, lender: "Bajaj", active: true });
+    await AP.runAutopays(localToUtc(today, "23:30"));
+    const [emiTx] = await db().select().from(transactions).where(and(eq(transactions.accountId, card.id), eq(transactions.category, "EMI/Loans")));
+    assert.equal(emiTx.amountPaise, 200000);
+    assert.equal(emiTx.note, "QA Phone EMI 2/2");
+    assert.equal(emiTx.method, "card");
+    assert.equal((await db().select().from(apT).where(eq(apT.id, emi.id)))[0].active, false, "stops after the last EMI");
+    assert.equal((await import("../src/lib/cards").then((m) => m.cardSummaries())).get(card.id)!.outstandingPaise, 200000, "EMI on the card counts towards it");
+    const listed = (await AP.listAutopays()).find((x) => x.id === emi.id)!;
+    assert.equal(listed.remainingCount, 0);
+    assert.equal((await db().select().from(runT).where(eq(runT.autopayId, emi.id))).length, 1);
   }
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);

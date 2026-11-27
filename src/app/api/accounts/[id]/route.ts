@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db, accounts } from "@/db";
 import { accountInputSchema, accountRow } from "@/lib/moneyplus";
 import { withUndo } from "@/lib/undo-route";
-import { syncCardReminder } from "@/lib/cards";
+import { cleanSharedLimit, syncCardReminder } from "@/lib/cards";
 import { changeRow } from "@/lib/undo";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -12,6 +12,7 @@ export const PATCH = withUndo(async (req: Request, { params }: Ctx) => {
   const { id } = await params;
   const p = accountInputSchema.safeParse(await req.json().catch(() => null));
   if (!p.success) return NextResponse.json({ error: p.error.issues[0]?.message }, { status: 400 });
+  p.data.sharedLimitId = await cleanSharedLimit(id, p.data.sharedLimitId);
   const [a] = await changeRow("accounts", id, `Edited account “${p.data.name}”`, "edit", () =>
     db()
       .update(accounts)

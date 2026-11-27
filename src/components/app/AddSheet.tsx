@@ -516,7 +516,7 @@ function AskPanel({ close, initialText }: { close: () => void; initialText?: str
                   ) : d.kind === "task" ? (
                     <TaskEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "task", value: v } : x)))} />
                   ) : (
-                    <ExpenseEditor value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "expense", value: v } : x)))} />
+                    <ExpenseEditor isNew value={d.value} onChange={(v) => setDrafts(drafts.map((x, j) => (j === i ? { kind: "expense", value: v } : x)))} />
                   )}
                 </div>
               )}
@@ -1021,6 +1021,7 @@ function ExpensePanel({ id, initial, startSplit, close }: { id?: string; initial
         }}
         extraCategories={extra}
         autoFocus={!id && !startSplit}
+        isNew={!id}
       />
       {value.type === "expense" && (
         <div className={clsx("mt-4 rounded-2xl", !splitOn && "border border-line px-3 py-2")}>

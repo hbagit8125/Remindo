@@ -20,6 +20,8 @@ export const accountInputSchema = z.object({
   statementDay: z.coerce.number().int().min(1).max(31).nullish(),
   dueDay: z.coerce.number().int().min(1).max(31).nullish(),
   payFromId: z.string().uuid().nullish(),
+  /** Uses this other card's limit (cards that share one limit). */
+  sharedLimitId: z.string().uuid().nullish(),
 });
 
 /** Columns for an account from the form. Card fields are cleared for other kinds. */
@@ -29,7 +31,9 @@ export function accountRow(d: z.infer<typeof accountInputSchema>) {
     name: d.name,
     kind: d.kind,
     openingBalancePaise: toPaise(d.openingBalance),
-    creditLimitPaise: card && d.creditLimit ? toPaise(d.creditLimit) : null,
+    // A card that shares another card's limit has no limit of its own.
+    creditLimitPaise: card && d.creditLimit && !d.sharedLimitId ? toPaise(d.creditLimit) : null,
+    sharedLimitId: card ? d.sharedLimitId || null : null,
     statementDay: card ? d.statementDay || null : null,
     dueDay: card ? d.dueDay || null : null,
     payFromId: card ? d.payFromId || null : null,

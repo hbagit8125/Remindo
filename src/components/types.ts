@@ -76,6 +76,9 @@ export type Transaction = {
   createdAt: string;
   /** Set when this expense is a split bill. */
   split?: { id: string; paidBy: string; myPaise: number; people: number; backPaise: number; duePaise: number; iOwePaise: number };
+  accountName?: string | null;
+  accountKind?: string | null;
+  toAccountName?: string | null;
 };
 
 export type Insights = {
@@ -216,6 +219,8 @@ export type CardSummary = {
   unbilledPaise: number;
   status: "setup" | "nobill" | "due" | "overdue" | "paid";
   daysToDue: number | null;
+  sharedWith: string[];
+  limitOwedPaise: number;
 };
 export type Account = {
   id: string;
@@ -227,6 +232,7 @@ export type Account = {
   statementDay?: number | null;
   dueDay?: number | null;
   payFromId?: string | null;
+  sharedLimitId?: string | null;
   card?: CardSummary | null;
 };
 export const ACCOUNT_META: Record<AccountKind, { emoji: string; label: string }> = {
