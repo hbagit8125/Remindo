@@ -403,6 +403,14 @@ export const savings = pgTable("savings", {
   maturityDate: text("maturity_date"),
   reminderId: uuid("reminder_id"),
   notes: text("notes"),
+  /** Interest added by itself at ratePct: monthly | quarterly | halfyearly | yearly (null = off). */
+  interestFreq: text("interest_freq"),
+  /** Interest paid out to this account instead of staying in (non-cumulative FD). */
+  interestAccountId: uuid("interest_account_id"),
+  /** Interest dates count from this day (e.g. the FD's start date). */
+  interestFrom: text("interest_from"),
+  /** Last date interest was added (nothing before it is ever added again). */
+  lastInterestDate: text("last_interest_date"),
   archived: boolean("archived").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -437,8 +445,12 @@ export const autopays = pgTable("autopays", {
   kind: text("kind").notNull(),
   name: text("name").notNull(),
   amountPaise: integer("amount_paise").notNull(),
-  /** Day of the month (31 = last day in shorter months). */
+  /** daily | weekly | monthly | yearly (EMIs are monthly). */
+  frequency: text("frequency").notNull().default("monthly"),
+  /** monthly/yearly: day of the month (31 = last day in shorter months); weekly: 1 = Monday … 7 = Sunday. */
   day: integer("day").notNull(),
+  /** yearly: the month (1–12). */
+  month: integer("month"),
   accountId: uuid("account_id"),
   /** SIP: the saving it goes into. */
   savingId: uuid("saving_id"),

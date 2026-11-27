@@ -15,7 +15,9 @@ export type AutopayRow = {
   kind: "sip" | "emi";
   name: string;
   amountPaise: number;
+  frequency: Frequency;
   day: number;
+  month: number | null;
   accountId: string | null;
   savingId: string | null;
   totalCount: number | null;
@@ -34,6 +36,22 @@ export type AutopayRow = {
   short: number;
 };
 
+type Frequency = "daily" | "weekly" | "monthly" | "yearly";
+const FREQS: { f: Frequency; label: string }[] = [
+  { f: "daily", label: "Daily" },
+  { f: "weekly", label: "Weekly" },
+  { f: "monthly", label: "Monthly" },
+  { f: "yearly", label: "Yearly" },
+];
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "Every day", "Every Monday", "5th every month", "Every 15 Mar". */
+function when(a: { frequency?: Frequency; day: number; month?: number | null }) {
+  if (a.frequency === "daily") return "Every day";
+  if (a.frequency === "weekly") return `Every ${WEEKDAYS[a.day - 1] || "week"}`;
+  if (a.frequency === "yearly") return `Every ${a.day} ${MONTHS[(a.month || 1) - 1]}`;
+  return `${ordinal(a.day)} every month`;
+}
 const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
 const short = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 const monthYear = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IN", { month: "short", year: "numeric" });
@@ -45,13 +63,13 @@ export function AutopayList({ kind, savingId }: { kind: "sip" | "emi"; savingId?
   const hidden = useHidden();
   const [editing, setEditing] = useState<Partial<AutopayRow> | null>(null);
   const list = (data?.autopays || []).filter((a) => a.kind === kind && !hidden.has(a.id) && (!savingId || a.savingId === savingId));
-  const title = kind === "sip" ? "SIPs" : "Loans & EMIs";
+  const title = kind === "sip" ? "SIPs & auto-deposits" : "Loans & EMIs";
   return (
     <section className="mb-6">
       <div className="mb-2 flex items-baseline justify-between px-1">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-subtle">{title}</h3>
         <button onClick={() => setEditing({ kind, savingId: savingId ?? null, active: true })} className="flex items-center gap-1 text-xs font-medium text-indigo-500">
-          <Plus className="h-3.5 w-3.5" /> {kind === "sip" ? "SIP" : "EMI"}
+          <Plus className="h-3.5 w-3.5" /> {kind === "sip" ? "Auto-deposit" : "EMI"}
         </button>
       </div>
       {!list.length ? (
@@ -60,7 +78,7 @@ export function AutopayList({ kind, savingId }: { kind: "sip" | "emi"; savingId?
           className="card w-full rounded-2xl px-4 py-3 text-left text-sm text-muted hover:bg-raised"
         >
           {kind === "sip"
-            ? "Add a SIP: it's moved from your bank into the saving on the day, by itself."
+            ? "Add a SIP or auto-deposit (RD, PPF, gold…): daily, weekly, monthly or yearly, moved from your bank into the saving by itself."
             : "Add an EMI: it's paid from your account on the due date, and stops after the last one."}
         </button>
       ) : (
@@ -85,7 +103,7 @@ function AutopayCard({ a, onOpen }: { a: AutopayRow; onOpen: () => void }) {
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium">{a.name}</span>
           <span className="block truncate text-xs text-muted">
-            {ordinal(a.day)} every month{a.accountName ? ` · from ${a.accountName}` : ""}
+            {when(a)}{a.accountName ? ` · from ${a.accountName}` : ""}
             {a.kind === "sip" && a.savingName ? ` → ${a.savingName}` : ""}
             {a.kind === "emi" && a.lender ? ` · ${a.lender}` : ""}
           </span>
@@ -125,7 +143,11 @@ export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>
   const savingsList = useData<{ savings: { id: string; name: string }[] }>(sip ? "/api/savings" : null).data?.savings || [];
   const [name, setName] = useState(initial.name || "");
   const [amount, setAmount] = useState(initial.amountPaise ? String(initial.amountPaise / 100) : "");
-  const [day, setDay] = useState<number>(initial.day || new Date().getDate());
+  const now = new Date();
+  const [frequency, setFrequency] = useState<Frequency>(initial.frequency || "monthly");
+  const [day, setDay] = useState<number>(initial.day || now.getDate());
+  const [weekday, setWeekday] = useState<number>(initial.frequency === "weekly" ? initial.day! : ((now.getDay() + 6) % 7) + 1);
+  const [month, setMonth] = useState<number>(initial.month || now.getMonth() + 1);
   const [accountId, setAccountId] = useState(initial.accountId || "");
   const [savingId, setSavingId] = useState(initial.savingId || "");
   const [lender, setLender] = useState(initial.lender || "");
@@ -140,7 +162,9 @@ export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>
     kind,
     name,
     amount: Number(amount) || 0,
-    day,
+    frequency: sip ? frequency : "monthly",
+    day: sip && frequency === "weekly" ? weekday : day,
+    month: sip && frequency === "yearly" ? month : null,
     accountId: accountId || accounts[0]?.id || null,
     savingId: savingId || null,
     newSavingName: savingId ? null : name,
@@ -151,7 +175,7 @@ export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>
     active,
   };
   return (
-    <Modal title={edit ? `Edit ${sip ? "SIP" : "EMI"}` : sip ? "New SIP" : "New EMI"} onClose={onClose}>
+    <Modal title={edit ? `Edit ${sip ? "auto-deposit" : "EMI"}` : sip ? "New SIP / auto-deposit" : "New EMI"} onClose={onClose}>
       <div className="grid gap-4">
         <div className="grid grid-cols-[1fr_8rem] gap-3">
           <div>
@@ -163,17 +187,69 @@ export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>
             <input className={field} type="text" inputMode="decimal" placeholder="0" value={amount} onChange={(e) => setAmount(num(e.target.value))} />
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className={label}>Every month on</label>
-            <select className={field} value={day} onChange={(e) => setDay(Number(e.target.value))}>
-              {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-                <option key={d} value={d}>
-                  {ordinal(d)}
-                </option>
-              ))}
-            </select>
+        {sip && (
+          <div className="flex rounded-xl bg-raised p-1 text-sm font-medium">
+            {FREQS.map(({ f, label: l }) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setFrequency(f)}
+                className={clsx("flex-1 rounded-lg py-2", frequency === f ? "bg-surface shadow-sm ring-1 ring-line" : "text-muted")}
+              >
+                {l}
+              </button>
+            ))}
           </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          {sip && frequency === "daily" ? (
+            <div>
+              <label className={label}>When</label>
+              <div className={clsx(field, "flex items-center text-muted")}>Every day</div>
+            </div>
+          ) : sip && frequency === "weekly" ? (
+            <div>
+              <label className={label}>Every</label>
+              <select className={field} value={weekday} onChange={(e) => setWeekday(Number(e.target.value))}>
+                {WEEKDAYS.map((w, i) => (
+                  <option key={w} value={i + 1}>
+                    {w}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : sip && frequency === "yearly" ? (
+            <div>
+              <label className={label}>Every year on</label>
+              <div className="grid grid-cols-[1fr_1.2fr] gap-1.5">
+                <select className={field} value={day} onChange={(e) => setDay(Number(e.target.value))}>
+                  {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+                <select className={field} value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+                  {MONTHS.map((m, i) => (
+                    <option key={m} value={i + 1}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <label className={label}>Every month on</label>
+              <select className={field} value={day} onChange={(e) => setDay(Number(e.target.value))}>
+                {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                  <option key={d} value={d}>
+                    {ordinal(d)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div>
             <label className={label}>{sip ? "From" : "Paid from"}</label>
             <select className={field} value={accountId || accounts[0]?.id || ""} onChange={(e) => setAccountId(e.target.value)}>
@@ -229,7 +305,7 @@ export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>
           </label>
         )}
         <p className="rounded-xl bg-indigo-500/10 px-3 py-2 text-xs text-indigo-800 dark:text-indigo-200">
-          On the {ordinal(day)}, {formatINR(Math.round((Number(amount) || 0) * 100))} is recorded from {acc?.name || "the account"} by itself
+          {sip ? when({ frequency, day: frequency === "weekly" ? weekday : day, month }) : `On the ${ordinal(day)}`}, {formatINR(Math.round((Number(amount) || 0) * 100))} is recorded from {acc?.name || "the account"} by itself
           {sip ? " and added to the saving (a transfer, not spending)" : " as an EMI/Loans expense"}. If {acc?.name || "it"} looks short the day before, you get a reminder at 7 pm.
           {!sip && Number(total) ? ` It stops after EMI ${total}.` : ""} Telegram shows each payment with an Undo button.
         </p>
@@ -252,7 +328,7 @@ export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>
             onClick={() =>
               run(
                 () => (edit ? api(`/api/autopays/${initial.id}`, { method: "PATCH", json: body }) : api("/api/autopays", { method: "POST", json: body })),
-                edit ? "Updated" : sip ? "SIP set up 🔁" : "EMI added",
+                edit ? "Updated" : sip ? "Auto-deposit set up 🔁" : "EMI added",
                 onClose,
               )
             }

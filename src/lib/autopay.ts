@@ -19,7 +19,11 @@ export const autopayInputSchema = z.object({
   kind: z.enum(["sip", "emi"]),
   name: z.string().trim().min(1).max(80),
   amount: z.coerce.number().positive().max(100_000_000),
-  day: z.coerce.number().int().min(1).max(31),
+  /** SIPs can run daily, weekly, monthly or yearly; EMIs are monthly. */
+  frequency: z.enum(["daily", "weekly", "monthly", "yearly"]).default("monthly"),
+  /** monthly/yearly: day of month; weekly: 1 = Monday … 7 = Sunday; daily: ignored. */
+  day: z.coerce.number().int().min(1).max(31).default(1),
+  month: z.coerce.number().int().min(1).max(12).nullish(),
   accountId: z.string().uuid().nullish(),
   savingId: z.string().uuid().nullish(),
   /** SIP without a saving yet: make one with this name. */
@@ -43,14 +47,34 @@ const dateOf = (y: number, m: number, day: number) => {
 const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
 const localToday = (now = new Date()) => fmtLocal(now, "yyyy-MM-dd");
 
+type Schedule = Pick<Autopay, "day" | "startDate"> & { frequency?: string | null; month?: number | null };
+
+/** ISO weekday of a yyyy-MM-dd date: 1 = Monday … 7 = Sunday. */
+const weekday = (d: string) => ((new Date(`${d}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+
 /** Payment dates from `from` to `to` (inclusive), never before the start date. */
-export function dueDates(a: Pick<Autopay, "day" | "startDate">, from: string, to: string) {
+export function dueDates(a: Schedule, from: string, to: string, limit = 1300) {
   const out: string[] = [];
   const start = from > a.startDate ? from : a.startDate;
-  const [y, m0] = start.split("-").map(Number);
+  const freq = a.frequency || "monthly";
+  if (freq === "daily" || freq === "weekly") {
+    for (let d = start, i = 0; d <= to && out.length < limit && i < 4000; d = addDays(d, 1), i++) {
+      if (freq === "daily" || weekday(d) === a.day) out.push(d);
+    }
+    return out;
+  }
+  const [y0, m0] = start.split("-").map(Number);
+  if (freq === "yearly") {
+    for (let y = y0; out.length < limit && y < y0 + 100; y++) {
+      const d = dateOf(y, a.month || 1, a.day);
+      if (d > to) break;
+      if (d >= start) out.push(d);
+    }
+    return out;
+  }
   let m = m0;
-  for (let i = 0; i < 1300; i++) {
-    const d = dateOf(y, m, a.day);
+  for (let i = 0; i < 1300 && out.length < limit; i++) {
+    const d = dateOf(y0, m, a.day);
     if (d > to) break;
     if (d >= start) out.push(d);
     m++;
@@ -59,13 +83,22 @@ export function dueDates(a: Pick<Autopay, "day" | "startDate">, from: string, to
 }
 
 /** The first payment date on or after `after`. */
-export function nextDue(a: Pick<Autopay, "day" | "startDate">, after: string) {
-  return dueDates(a, after, addDays(after, 62))[0];
+export function nextDue(a: Schedule, after: string) {
+  return dueDates(a, after, addDays(after, 370), 1)[0];
 }
 
-/** "First payment" for a new SIP/EMI: the next time that day comes round (today counts). */
-export function firstDate(day: number, today = localToday()) {
-  return nextDue({ day, startDate: today }, today);
+/** First payment for a new SIP/EMI: the next time it comes round (today counts). */
+export function firstDate(s: Omit<Schedule, "startDate">, today = localToday()) {
+  return nextDue({ ...s, startDate: today }, today);
+}
+
+/** "Every day", "Every Monday", "5th every month", "Every 15 Mar". */
+export function scheduleLabel(a: { frequency?: string | null; day: number; month?: number | null }) {
+  const ord = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
+  if (a.frequency === "daily") return "Every day";
+  if (a.frequency === "weekly") return `Every ${["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][a.day - 1] || "week"}`;
+  if (a.frequency === "yearly") return `Every ${a.day} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(a.month || 1) - 1]}`;
+  return `${ord(a.day)} every month`;
 }
 
 // ------------------------------------------------------------- list
@@ -93,7 +126,7 @@ export async function listAutopays(today = localToday()) {
     const acc = accs.find((x) => x.id === a.accountId) ?? null;
     const available = acc ? (acc.kind === "card" ? (acc.card?.availablePaise ?? null) : acc.balancePaise) : null;
     const left = a.kind === "emi" && a.totalCount ? Math.max(0, a.totalCount - paid) : null;
-    const lastDate = left ? dueDates(a, next || today, "9999-12-31").slice(0, left).at(-1) ?? null : null;
+    const lastDate = left ? (dueDates(a, next || today, "9999-12-31", left).at(-1) ?? null) : null;
     return {
       ...a,
       paidCount: paid,
@@ -124,11 +157,16 @@ async function rowFrom(d: AutopayInput, existing?: Autopay) {
     kind: d.kind,
     name: d.name,
     amountPaise: toPaise(d.amount),
-    day: d.day,
+    frequency: d.kind === "emi" ? "monthly" : d.frequency,
+    day: d.kind === "emi" || d.frequency !== "weekly" ? d.day : Math.min(7, d.day),
+    month: d.kind === "sip" && d.frequency === "yearly" ? d.month || 1 : null,
     accountId: d.accountId || null,
     savingId,
     // Changing the day moves the next payment; it never goes back and records old ones.
-    startDate: d.startDate || existing?.startDate || firstDate(d.day),
+    startDate:
+      d.startDate ||
+      (existing && existing.frequency === (d.kind === "emi" ? "monthly" : d.frequency) ? existing.startDate : null) ||
+      firstDate({ frequency: d.kind === "emi" ? "monthly" : d.frequency, day: d.day, month: d.month }),
     totalCount: d.kind === "emi" ? d.totalCount ?? null : null,
     paidBefore: d.kind === "emi" ? d.paidBefore : 0,
     loanPaise: d.kind === "emi" && d.loanAmount ? toPaise(d.loanAmount) : null,
@@ -203,7 +241,7 @@ async function pay(a: Autopay, dueDate: string) {
         const [acc] = a.accountId ? await db().select().from(accounts).where(eq(accounts.id, a.accountId)) : [];
         if (a.kind === "sip" && a.savingId) {
           const { addEntry } = await import("./savings");
-          const e = await addEntry(a.savingId, { type: "deposit", amount: a.amountPaise / 100, date: dueDate, note: `SIP · ${fmtLocal(new Date(`${dueDate}T12:00:00Z`), "MMM yyyy")}`, accountId: acc && acc.kind !== "card" ? acc.id : null });
+          const e = await addEntry(a.savingId, { type: "deposit", amount: a.amountPaise / 100, date: dueDate, note: `SIP · ${fmtLocal(new Date(`${dueDate}T12:00:00Z`), a.frequency === "monthly" ? "MMM yyyy" : a.frequency === "yearly" ? "yyyy" : "d MMM")}`, accountId: acc && acc.kind !== "card" ? acc.id : null });
           await db().update(autopayRuns).set({ savingEntryId: e?.id ?? null, transactionId: e?.transactionId ?? null }).where(eq(autopayRuns.id, run.id));
         } else {
           const { createTransactions } = await import("./create");
@@ -337,7 +375,9 @@ export async function checkAutopays(now = new Date()) {
 
 export async function autopayTick(now = new Date()) {
   const paid = await runAutopays(now).catch((e) => (console.error("[remindo:autopay]", e), []));
+  // FD/RD/PPF interest that has come due (from 7am, like payments).
+  const interest = Number(fmtLocal(now, "H")) >= 7 ? await import("./savings").then((m) => m.creditInterest(now)).catch((e) => (console.error("[remindo:interest]", e), [])) : [];
   const check = await checkAutopays(now).catch((e) => (console.error("[remindo:autopay]", e), { alerts: 0 }));
-  return { paid: paid.length, ...check };
+  return { paid: paid.length, interest: interest.length, ...check };
 }
 

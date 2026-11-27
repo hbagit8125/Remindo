@@ -46,7 +46,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 
 async function main() {
   const pg = new PGlite();
-  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql", "drizzle/0010_savings.sql", "drizzle/0011_shared_card_limit.sql", "drizzle/0012_autopay.sql"])
+  for (const file of ["drizzle/0000_init.sql", "drizzle/0001_expenses.sql", "drizzle/0002_notifications.sql", "drizzle/0003_tasks.sql", "drizzle/0004_money_plus.sql", "drizzle/0005_life.sql", "drizzle/0006_sync.sql", "drizzle/0007_splits.sql", "drizzle/0008_undo.sql", "drizzle/0009_credit_cards.sql", "drizzle/0010_savings.sql", "drizzle/0011_shared_card_limit.sql", "drizzle/0012_autopay.sql", "drizzle/0013_sip_frequency.sql", "drizzle/0014_savings_interest.sql"])
     for (const stmt of readFileSync(file, "utf8").split("--> statement-breakpoint")) await pg.exec(stmt);
   const schema = await import("../src/db/schema");
   (globalThis as Record<string, unknown>).__testDb = drizzle(pg, { schema });
@@ -1188,6 +1188,13 @@ async function main() {
 
     const AP = await import("../src/lib/autopay");
     assert.deepEqual(AP.dueDates({ day: 31, startDate: "2026-01-15" }, "2026-01-01", "2026-04-30"), ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"]);
+    // Daily, weekly (2026-11-27 is a Friday = 5) and yearly SIPs.
+    assert.deepEqual(AP.dueDates({ frequency: "daily", day: 1, startDate: "2026-11-27" }, "2026-11-27", "2026-11-29"), ["2026-11-27", "2026-11-28", "2026-11-29"]);
+    assert.deepEqual(AP.dueDates({ frequency: "weekly", day: 5, startDate: "2026-11-01" }, "2026-11-01", "2026-11-30"), ["2026-11-06", "2026-11-13", "2026-11-20", "2026-11-27"]);
+    assert.deepEqual(AP.dueDates({ frequency: "yearly", day: 29, month: 2, startDate: "2027-01-01" }, "2027-01-01", "2029-01-01"), ["2027-02-28", "2028-02-29"]);
+    assert.equal(AP.nextDue({ frequency: "weekly", day: 1, startDate: "2026-11-27" }, "2026-11-27"), "2026-11-30");
+    assert.equal(AP.scheduleLabel({ frequency: "weekly", day: 1 }), "Every Monday");
+    assert.equal(AP.scheduleLabel({ frequency: "yearly", day: 15, month: 3 }), "Every 15 Mar");
     const { localToUtc } = await import("../src/lib/time");
     const { autopays: apT, autopayRuns: runT, savingEntries: seT2 } = await import("../src/db");
     const MP5 = await import("../src/lib/moneyplus");
@@ -1197,7 +1204,7 @@ async function main() {
     const today = local(0).date;
     const tomorrow = local(60 * 24).date;
     const fund = await SV2.createSaving({ name: "QA SIP fund", kind: "mutual_fund" });
-    const sip = await AP.createAutopay({ kind: "sip", name: "QA SIP", amount: 5000, day: Number(tomorrow.slice(8)), accountId: bank.id, savingId: fund.id, paidBefore: 0, active: true });
+    const sip = await AP.createAutopay({ kind: "sip", name: "QA SIP", amount: 5000, frequency: "monthly", day: Number(tomorrow.slice(8)), accountId: bank.id, savingId: fund.id, paidBefore: 0, active: true });
     // Tomorrow's SIP is ₹5,000 but the bank has ₹3,000 → a reminder today at 7pm to add ₹2,000.
     await AP.checkAutopays(localToUtc(today, "09:00"));
     let [sipRow] = await db().select().from(apT).where(eq(apT.id, sip.id));
@@ -1222,7 +1229,7 @@ async function main() {
     assert.match(String(tgSent.body.text), /Auto-paid/);
     // EMI: 2 in total, 1 already paid → today's is the last; it's spending and then it stops.
     const card = (await (await ACR3.POST(new Request("https://x", { method: "POST", body: JSON.stringify({ name: "QA EMI card", kind: "card", openingBalance: 0, creditLimit: 50000 }) }))).json()).account;
-    const emi = await AP.createAutopay({ kind: "emi", name: "QA Phone", amount: 2000, day: Number(today.slice(8)), accountId: card.id, totalCount: 2, paidBefore: 1, lender: "Bajaj", active: true });
+    const emi = await AP.createAutopay({ kind: "emi", name: "QA Phone", amount: 2000, frequency: "monthly", day: Number(today.slice(8)), accountId: card.id, totalCount: 2, paidBefore: 1, lender: "Bajaj", active: true });
     await AP.runAutopays(localToUtc(today, "23:30"));
     const [emiTx] = await db().select().from(transactions).where(and(eq(transactions.accountId, card.id), eq(transactions.category, "EMI/Loans")));
     assert.equal(emiTx.amountPaise, 200000);
@@ -1233,6 +1240,57 @@ async function main() {
     const listed = (await AP.listAutopays()).find((x) => x.id === emi.id)!;
     assert.equal(listed.remainingCount, 0);
     assert.equal((await db().select().from(runT).where(eq(runT.autopayId, emi.id))).length, 1);
+    // A daily SIP pays every day, once a day.
+    const daily = await AP.createAutopay({ kind: "sip", name: "QA Daily SIP", amount: 100, frequency: "daily", day: 1, accountId: bank.id, savingId: fund.id, paidBefore: 0, active: true });
+    assert.equal(daily.startDate, today);
+    await AP.runAutopays(localToUtc(tomorrow, "10:00"));
+    await AP.runAutopays(localToUtc(tomorrow, "11:00"));
+    assert.deepEqual((await db().select().from(runT).where(eq(runT.autopayId, daily.id))).map((r) => r.dueDate).sort(), [today, tomorrow], "today and tomorrow, once each");
+  }
+
+  // ---------------------------------------------------------------- Interest added by itself
+  {
+    const SV3 = await import("../src/lib/savings");
+    const { savingEntries: seT3, savings: svT3 } = await import("../src/db");
+    // Quarterly from 15 Jan, maturing 1 Aug: Apr 15, Jul 15, then 17 days on 1 Aug.
+    assert.deepEqual(
+      SV3.interestDates({ interestFreq: "quarterly", interestFrom: "2026-01-15", maturityDate: "2026-08-01" }, "2026-01-15", "2026-12-31").map((d) => d.date),
+      ["2026-04-15", "2026-07-15", "2026-08-01"],
+    );
+    assert.equal(SV3.interestDates({ interestFreq: "yearly", interestFrom: "2024-02-29" }, "2024-02-29", "2026-03-01")[1].date, "2026-02-28");
+    // An FD of ₹1,00,000 at 8% with monthly interest, counting from a month before today.
+    const t0 = local(0).date;
+    const from = (() => {
+      const [y, m, d] = t0.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 2, Math.min(d, 28))).toISOString().slice(0, 10);
+    })();
+    const fd = await SV3.createSaving({ name: "QA Interest FD", kind: "fd", ratePct: 8, interestFreq: "monthly", interestFrom: from, startAmount: 100000 });
+    // Never back-dated: the month that already passed isn't added.
+    await SV3.creditInterest(new Date());
+    assert.equal((await db().select().from(seT3).where(and(eq(seT3.savingId, fd.id), eq(seT3.type, "growth")))).length, 0, "no back-dated interest");
+    // Pretend the last interest date was a month ago → the next one is due and gets added once.
+    await db().update(svT3).set({ lastInterestDate: from }).where(eq(svT3.id, fd.id));
+    const { localToUtc } = await import("../src/lib/time");
+    const added = await SV3.creditInterest(localToUtc(t0, "23:00"));
+    const growth = await db().select().from(seT3).where(and(eq(seT3.savingId, fd.id), eq(seT3.type, "growth")));
+    if (Number(t0.slice(8)) <= 28) {
+      assert.equal(added.length, 1);
+      assert.equal(growth[0].amountPaise, Math.round((10000000 * 8) / 12 / 100), "₹666.67 for a month at 8%");
+      assert.equal((await SV3.creditInterest(localToUtc(t0, "23:30"))).length, 0, "once");
+      assert.equal((await SV3.getSaving(fd.id))!.nextInterest!.paise, Math.round(((10000000 + growth[0].amountPaise) * 8) / 12 / 100), "compounds");
+    }
+    // Paid out: the interest goes to the bank, the FD stays the same.
+    const MP6 = await import("../src/lib/moneyplus");
+    const bk = (await MP6.listAccounts()).find((a) => a.name === "QA Autopay Bank")!;
+    const fd2 = await SV3.createSaving({ name: "QA Payout FD", kind: "fd", ratePct: 12, interestFreq: "monthly", interestFrom: from, interestAccountId: bk.id, startAmount: 50000 });
+    await db().update(svT3).set({ lastInterestDate: from }).where(eq(svT3.id, fd2.id));
+    await SV3.creditInterest(localToUtc(t0, "23:00"));
+    if (Number(t0.slice(8)) <= 28) {
+      const d2 = (await SV3.getSaving(fd2.id))!;
+      assert.equal(d2.valuePaise, 5000000, "value unchanged");
+      assert.equal(d2.growthPaise, 50000, "₹500 earned");
+      assert.equal((await MP6.listAccounts()).find((a) => a.id === bk.id)!.balancePaise, bk.balancePaise + 50000, "bank got it");
+    }
   }
 
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);

@@ -19,6 +19,12 @@ export const savingInputSchema = z.object({
   ratePct: z.coerce.number().min(0).max(100).nullish(),
   maturityDate: isoDay().nullish(),
   notes: z.string().trim().max(1000).nullish(),
+  /** Add interest by itself at ratePct (FD, RD, PPF, savings account…). */
+  interestFreq: z.enum(["monthly", "quarterly", "halfyearly", "yearly"]).nullish(),
+  /** Paid out to this account (non-cumulative FD) instead of staying in. */
+  interestAccountId: z.string().uuid().nullish(),
+  /** Interest dates count from here (e.g. when the FD was opened). Default: today. */
+  interestFrom: isoDay().nullish(),
   /** New only: what's in it today (counted as money you put in). */
   startAmount: z.coerce.number().min(0).max(1_000_000_000).nullish(),
   /** New only: the account that money came from (makes a transfer). */
@@ -81,7 +87,8 @@ export async function listSavings() {
   const list = rows.map((s) => {
     const mine = entries.filter((e) => e.savingId === s.id);
     const last = mine.reduce((m, e) => (e.date > m ? e.date : m), "");
-    return { ...s, ...totals(mine), lastDate: last || null, entryCount: mine.length };
+    const tot = totals(mine);
+    return { ...s, ...tot, lastDate: last || null, entryCount: mine.length, nextInterest: nextInterest(s, tot.valuePaise) };
   });
   const all = totals(entries.filter((e) => list.some((s) => s.id === e.savingId)));
   const earnedThisYear = entries.filter((e) => e.type === "growth" && e.date >= yearStart && list.some((s) => s.id === e.savingId)).reduce((t, e) => t + e.amountPaise, 0);
@@ -92,7 +99,8 @@ export async function getSaving(id: string) {
   const [s] = await db().select().from(savings).where(eq(savings.id, id));
   if (!s) return null;
   const entries = await db().select().from(savingEntries).where(eq(savingEntries.savingId, id)).orderBy(desc(savingEntries.date), desc(savingEntries.createdAt));
-  return { ...s, ...totals(entries), entries };
+  const tot = totals(entries);
+  return { ...s, ...tot, entries, nextInterest: nextInterest(s, tot.valuePaise) };
 }
 
 // ------------------------------------------------------------- maturity reminder
@@ -134,13 +142,20 @@ function row(d: SavingInput) {
     ratePct: d.ratePct != null ? String(d.ratePct) : null,
     maturityDate: d.maturityDate || null,
     notes: d.notes || null,
+    interestFreq: d.interestFreq && d.ratePct ? d.interestFreq : null,
+    interestAccountId: d.interestFreq && d.ratePct ? d.interestAccountId || null : null,
+    interestFrom: d.interestFreq && d.ratePct ? d.interestFrom || today() : null,
   };
 }
 
 export async function createSaving(d: SavingInput) {
   const u = await import("./undo");
   return u.recorded({ title: `Added saving “${d.name}”`, kind: "add" }, async (rec) => {
-    const [s] = await db().insert(savings).values(row(d)).returning();
+    // Interest is only ever added from today on (what's in it today already includes the past).
+    const [s] = await db()
+      .insert(savings)
+      .values({ ...row(d), lastInterestDate: d.interestFreq ? today() : null })
+      .returning();
     rec(u.removed("savings", [s.id]));
     if (d.startAmount) await addEntryInner(s, { type: "deposit", amount: d.startAmount, date: today(), note: "Starting amount", accountId: d.fromAccountId }, rec);
     await syncMaturity(s);
@@ -152,7 +167,15 @@ export async function updateSaving(id: string, d: SavingInput) {
   const u = await import("./undo");
   return u.recorded({ title: `Edited ${d.name}`, kind: "edit" }, async (rec) => {
     rec(await u.snap("savings", [id]));
-    const [s] = await db().update(savings).set(row(d)).where(eq(savings.id, id)).returning();
+    const [cur] = await db().select().from(savings).where(eq(savings.id, id));
+    const next = row(d);
+    // Turning interest on (or changing how it's counted) starts from today: no back-dated interest.
+    const changed = next.interestFreq && (next.interestFreq !== cur?.interestFreq || next.interestFrom !== cur?.interestFrom || next.ratePct !== cur?.ratePct);
+    const [s] = await db()
+      .update(savings)
+      .set({ ...next, ...(changed ? { lastInterestDate: today() } : {}) })
+      .where(eq(savings.id, id))
+      .returning();
     if (s) await syncMaturity(s);
     return s ?? null;
   });
@@ -243,4 +266,89 @@ export async function deleteEntry(id: string) {
     await db().delete(savingEntries).where(and(eq(savingEntries.id, id)));
     return e;
   });
+}
+
+// ------------------------------------------------------------- interest added by itself
+
+export const INTEREST_MONTHS = { monthly: 1, quarterly: 3, halfyearly: 6, yearly: 12 } as const;
+
+const addMonths = (d: string, n: number, dayOfMonth: number) => {
+  const [y, m] = d.split("-").map(Number);
+  const yy = y + Math.floor((m - 1 + n) / 12);
+  const mm = ((((m - 1 + n) % 12) + 12) % 12) + 1;
+  const last = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+  return `${yy}-${String(mm).padStart(2, "0")}-${String(Math.min(dayOfMonth, last)).padStart(2, "0")}`;
+};
+const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 864e5);
+
+/**
+ * The interest dates (and the share of a year each covers) after `after` up to `upTo`:
+ * every 1/3/6/12 months from `from`, plus a part-period on the maturity date.
+ */
+export function interestDates(s: { interestFreq: string; interestFrom: string; maturityDate?: string | null }, after: string, upTo: string) {
+  const n = INTEREST_MONTHS[s.interestFreq as keyof typeof INTEREST_MONTHS] || 12;
+  const day = Number(s.interestFrom.slice(8, 10));
+  const end = s.maturityDate && s.maturityDate < upTo ? s.maturityDate : upTo;
+  const out: { date: string; years: number }[] = [];
+  let prev = s.interestFrom;
+  for (let k = 1; k < 1200; k++) {
+    const d = addMonths(s.interestFrom, n * k, day);
+    if (d > end) break;
+    if (d > after) out.push({ date: d, years: n / 12 });
+    prev = d;
+  }
+  // Matures between interest dates: the last bit, day by day.
+  if (s.maturityDate && s.maturityDate <= upTo && s.maturityDate > prev && s.maturityDate > after) out.push({ date: s.maturityDate, years: daysBetween(prev, s.maturityDate) / 365 });
+  return out;
+}
+
+/** Add interest that has come due (in the daily job). Returns lines like "Interest ₹1,850 · SBI FD". */
+export async function creditInterest(now = new Date()) {
+  const u = await import("./undo");
+  const t = fmtLocal(now, "yyyy-MM-dd");
+  const rows = await db().select().from(savings).where(eq(savings.archived, false));
+  const done: { label: string; undoId: string | null }[] = [];
+  for (const s of rows) {
+    const rate = Number(s.ratePct);
+    if (!s.interestFreq || !rate || !s.interestFrom) continue;
+    const after = s.lastInterestDate || t;
+    for (const { date, years } of interestDates({ interestFreq: s.interestFreq, interestFrom: s.interestFrom, maturityDate: s.maturityDate }, after, t).slice(0, 12)) {
+      // Claim the date first so two runs can't both add it.
+      const [claimed] = await db()
+        .update(savings)
+        .set({ lastInterestDate: date })
+        .where(and(eq(savings.id, s.id), s.lastInterestDate ? eq(savings.lastInterestDate, s.lastInterestDate) : eq(savings.id, s.id)))
+        .returning();
+      if (!claimed) break;
+      s.lastInterestDate = date;
+      const entries = await db().select().from(savingEntries).where(eq(savingEntries.savingId, s.id));
+      const value = totals(entries.filter((e) => e.date <= date)).valuePaise;
+      const paise = Math.round((value * rate * years) / 100);
+      if (paise <= 0) continue;
+      const label = `Interest ₹${(paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 })} · ${s.name}${s.interestAccountId ? " (paid out)" : ""}`;
+      const { undoId } = await u.track(
+        () =>
+          u.recorded({ title: label, kind: "add" }, async (rec) => {
+            await addEntryInner(s, { type: "growth", amount: paise / 100, date, note: `Interest at ${rate}%` }, rec);
+            // Non-cumulative: the interest goes straight to your bank.
+            if (s.interestAccountId) await addEntryInner(s, { type: "withdraw", amount: paise / 100, date, note: "Interest paid out", accountId: s.interestAccountId }, rec);
+          }),
+        { via: "app" },
+      );
+      done.push({ label, undoId });
+    }
+  }
+  if (done.length) {
+    const { sendTelegram, h } = await import("./telegram");
+    for (const d of done) await sendTelegram(`📈 <b>${h(d.label)}</b>`, d.undoId ? [[{ text: "↩️ Undo", callback_data: `u:${d.undoId}` }]] : undefined).catch(() => null);
+  }
+  return done;
+}
+
+/** The next interest date and a rough amount, for the saving's page. */
+export function nextInterest(s: Pick<Saving, "interestFreq" | "interestFrom" | "maturityDate" | "ratePct" | "lastInterestDate">, valuePaise: number, t = today()) {
+  if (!s.interestFreq || !s.interestFrom || !Number(s.ratePct)) return null;
+  const next = interestDates({ interestFreq: s.interestFreq, interestFrom: s.interestFrom, maturityDate: s.maturityDate }, s.lastInterestDate && s.lastInterestDate > t ? s.lastInterestDate : t, "9999-12-31")[0];
+  if (!next) return null;
+  return { date: next.date, paise: Math.round((valuePaise * Number(s.ratePct) * next.years) / 100) };
 }

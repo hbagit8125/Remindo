@@ -21,9 +21,15 @@ type Saving = Totals & {
   institution: string | null;
   ratePct: string | null;
   maturityDate: string | null;
+  interestFreq?: InterestFreq | null;
+  interestAccountId?: string | null;
+  interestFrom?: string | null;
+  nextInterest?: { date: string; paise: number } | null;
   notes: string | null;
   lastDate?: string | null;
 };
+type InterestFreq = "monthly" | "quarterly" | "halfyearly" | "yearly";
+const INTEREST_LABEL: Record<InterestFreq, string> = { monthly: "monthly", quarterly: "quarterly", halfyearly: "half-yearly", yearly: "yearly" };
 type Entry = { id: string; type: "deposit" | "withdraw" | "growth"; amountPaise: number; date: string; note: string | null; transactionId: string | null };
 type EntryKind = "deposit" | "withdraw" | "growth" | "value";
 
@@ -31,6 +37,7 @@ const todayStr = () => new Date().toLocaleDateString("en-CA");
 const shortDate = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: d.slice(0, 4) === todayStr().slice(0, 4) ? undefined : "numeric" });
 const daysTo = (d: string) => Math.round((Date.parse(`${d}T00:00:00`) - Date.parse(`${todayStr()}T00:00:00`)) / 864e5);
 const meta = (k: string) => SAVING_KINDS[k as SavingKind] || SAVING_KINDS.other;
+const ordinalDay = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
 const signed = (p: number) => `${p >= 0 ? "+" : "−"}${formatINR(Math.abs(p))}`;
 const pct = (n: number | null) => (n === null ? "" : ` (${n >= 0 ? "+" : ""}${n}%)`);
 
@@ -102,7 +109,7 @@ export function SavingsScreen() {
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium">{s.name}</span>
                       <span className="block truncate text-xs text-muted">
-                        {[s.institution || m.label, s.ratePct && `${s.ratePct}%`, left !== null && (left < 0 ? "matured" : left === 0 ? "matures today" : `matures in ${left}d`)].filter(Boolean).join(" · ")}
+                        {[s.institution || m.label, s.ratePct && `${s.ratePct}%${s.interestFreq ? ` ${INTEREST_LABEL[s.interestFreq]}` : ""}`, left !== null && (left < 0 ? "matured" : left === 0 ? "matures today" : `matures in ${left}d`)].filter(Boolean).join(" · ")}
                       </span>
                     </span>
                     <span className="text-right">
@@ -189,6 +196,12 @@ function SavingDetail({ id, onClose, onEdit }: { id: string; onClose: () => void
                 {pct(s.returnPct)}
               </span>
             </div>
+            {s.nextInterest && (
+              <p className="mt-2 text-xs text-muted">
+                📈 Next interest about <b className="text-emerald-600 dark:text-emerald-400">{formatINR(s.nextInterest.paise)}</b> on {shortDate(s.nextInterest.date)}
+                {s.interestAccountId ? " (paid out to your bank)" : " (added by itself)"}
+              </p>
+            )}
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             {actions.map((a, i) => (
@@ -377,7 +390,10 @@ function SavingForm({ initial, onClose }: { initial: Partial<Saving>; onClose: (
   const [start, setStart] = useState("");
   const [fromAccountId, setFromAccountId] = useState("");
   const edit = Boolean(initial.id);
-  const fixed = ["fd", "rd", "ppf", "savings", "chit"].includes(kind);
+  const fixed = ["fd", "rd", "ppf", "savings", "chit", "other"].includes(kind);
+  const [interestFreq, setInterestFreq] = useState<InterestFreq | "">(initial.interestFreq || "");
+  const [interestTo, setInterestTo] = useState(initial.interestAccountId || "");
+  const [interestFrom, setInterestFrom] = useState(initial.interestFrom || new Date().toLocaleDateString("en-CA"));
   const body = {
     name,
     kind,
@@ -385,6 +401,9 @@ function SavingForm({ initial, onClose }: { initial: Partial<Saving>; onClose: (
     ratePct: rate ? Number(rate) : null,
     maturityDate: maturity || null,
     notes: initial.notes || null,
+    interestFreq: fixed && rate && interestFreq ? interestFreq : null,
+    interestAccountId: fixed && rate && interestFreq ? interestTo || null : null,
+    interestFrom: fixed && rate && interestFreq ? interestFrom : null,
     ...(edit ? {} : { startAmount: Number(start) || null, fromAccountId: fromAccountId || null }),
   };
   return (
@@ -423,6 +442,46 @@ function SavingForm({ initial, onClose }: { initial: Partial<Saving>; onClose: (
               <label className={label}>Matures on</label>
               <input className={field} type="date" value={maturity} onChange={(e) => setMaturity(e.target.value)} />
             </div>
+          </div>
+        )}
+        {fixed && Number(rate) > 0 && (
+          <div className="grid gap-3 rounded-2xl border border-line p-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={label}>Add interest</label>
+                <select className={field} value={interestFreq} onChange={(e) => setInterestFreq(e.target.value as InterestFreq | "")}>
+                  <option value="">I&apos;ll add it myself</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="quarterly">Quarterly</option>
+                  <option value="halfyearly">Half-yearly</option>
+                  <option value="yearly">Yearly</option>
+                </select>
+              </div>
+              {interestFreq && (
+                <div>
+                  <label className={label}>Counting from</label>
+                  <input className={field} type="date" value={interestFrom} onChange={(e) => setInterestFrom(e.target.value)} />
+                </div>
+              )}
+            </div>
+            {interestFreq && (
+              <>
+                <div>
+                  <label className={label}>Interest goes</label>
+                  <select className={field} value={interestTo} onChange={(e) => setInterestTo(e.target.value)}>
+                    <option value="">Stays in it (grows / compounds)</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        Paid out to {ACCOUNT_META[a.kind].emoji} {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className="text-xs text-muted">
+                  {rate}% a year is added {INTEREST_LABEL[interestFreq]} on the {ordinalDay(Number(interestFrom.slice(8)))} (from {shortDate(interestFrom)}), on what&apos;s in it at the time{maturity ? `, until it matures` : ""}. Only future interest is added, never back-dated. You can still add or fix interest yourself.
+                </p>
+              </>
+            )}
           </div>
         )}
         {!edit && (

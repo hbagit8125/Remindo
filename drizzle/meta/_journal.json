@@ -92,6 +92,20 @@
       "when": 1795752876739,
       "tag": "0012_autopay",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795756523510,
+      "tag": "0013_sip_frequency",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1795756730404,
+      "tag": "0014_savings_interest",
+      "breakpoints": true
     }
   ]
 }
