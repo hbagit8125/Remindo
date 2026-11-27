@@ -372,6 +372,10 @@ function PayEarly({ a, onClose }: { a: AutopayRow; onClose: () => void }) {
   const { busy, run } = useSubmit();
   const today = new Date().toLocaleDateString("en-CA");
   const [paidOn, setPaidOn] = useState(today);
+  // Paid from: the usual account by default; any other account or card, or "Other" (not tracked).
+  const accounts = (useData<{ accounts: Account[] }>("/api/accounts").data?.accounts || []).filter((x) => a.kind === "emi" || x.kind !== "card");
+  const [from, setFrom] = useState<string>(a.accountId || "other");
+  const fromAcc = accounts.find((x) => x.id === from);
   const emiNo = a.kind === "emi" ? Math.min(a.paidCount + 1, a.totalCount ?? a.paidCount + 1) : null;
   return (
     <Modal title={`Paid early · ${a.name}`} onClose={onClose}>
@@ -379,12 +383,31 @@ function PayEarly({ a, onClose }: { a: AutopayRow; onClose: () => void }) {
         <div className="card rounded-2xl p-4">
           <p className="text-xs text-muted">{a.kind === "emi" ? `EMI ${emiNo}${a.totalCount ? ` of ${a.totalCount}` : ""}` : "Next payment"}, due {a.nextDate ? short(a.nextDate) : ""}</p>
           <p className="text-2xl font-semibold tabular-nums">{formatINR(a.amountPaise)}</p>
-          <p className="text-xs text-muted">{a.accountName ? `from ${a.accountName}` : ""}</p>
         </div>
-        <div>
-          <label className={label}>Paid on</label>
-          <input className={field} type="date" value={paidOn} max={today} onChange={(e) => setPaidOn(e.target.value)} />
+        <div className="grid grid-cols-[1.4fr_1fr] gap-3">
+          <div>
+            <label className={label}>Paid from</label>
+            <select className={field} value={from} onChange={(e) => setFrom(e.target.value)}>
+              {accounts.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {ACCOUNT_META[x.kind].emoji} {x.name}
+                  {x.id === a.accountId ? " ✓" : ""}
+                </option>
+              ))}
+              <option value="other">Other (not in Remindo)</option>
+            </select>
+          </div>
+          <div>
+            <label className={label}>Paid on</label>
+            <input className={field} type="date" value={paidOn} max={today} onChange={(e) => setPaidOn(e.target.value)} />
+          </div>
         </div>
+        {fromAcc && fromAcc.kind !== "card" && fromAcc.balancePaise < a.amountPaise && (
+          <p className="-mt-2 text-xs text-amber-600">
+            {fromAcc.name} shows {formatINR(fromAcc.balancePaise)}: this takes it below zero.
+          </p>
+        )}
+        {from === "other" && <p className="-mt-2 text-xs text-muted">Recorded without changing any balance (e.g. paid by someone else or from an account you don&apos;t track).</p>}
         <p className="text-xs text-muted">
           It&apos;s recorded now{a.kind === "sip" ? " and added to the saving" : " as an EMI/Loans expense"}. On {a.nextDate ? short(a.nextDate) : "the due date"} nothing more is taken and there&apos;s no low-balance reminder for it. The next one after that stays as usual.
         </p>
@@ -392,7 +415,7 @@ function PayEarly({ a, onClose }: { a: AutopayRow; onClose: () => void }) {
           data-submit
           className={primaryBtn}
           disabled={busy}
-          onClick={() => run(() => api(`/api/autopays/${a.id}/pay`, { method: "POST", json: { paidOn } }), a.kind === "emi" ? `EMI ${emiNo} marked paid ✓` : "Marked paid ✓", onClose)}
+          onClick={() => run(() => api(`/api/autopays/${a.id}/pay`, { method: "POST", json: { paidOn, accountId: from === "other" ? null : from } }), a.kind === "emi" ? `EMI ${emiNo} marked paid ✓` : "Marked paid ✓", onClose)}
         >
           {busy && <Loader2 className="h-4 w-4 animate-spin" />} Mark as paid
         </button>

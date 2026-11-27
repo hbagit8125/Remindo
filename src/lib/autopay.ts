@@ -230,7 +230,8 @@ async function clearAlert(a: Autopay) {
 // ------------------------------------------------------------- the daily work
 
 /** Record one payment (both the money and the run, so it never happens twice). */
-async function pay(a: Autopay, dueDate: string, early?: { paidOn: string }) {
+/** early.accountId: undefined = the usual account, null = "Other" (an account you don't track). */
+async function pay(a: Autopay, dueDate: string, early?: { paidOn: string; accountId?: string | null }) {
   const u = await import("./undo");
   // Claim the date first: if two runs race, only one records the money.
   const [run] = await db().insert(autopayRuns).values({ autopayId: a.id, dueDate }).onConflictDoNothing().returning();
@@ -243,7 +244,8 @@ async function pay(a: Autopay, dueDate: string, early?: { paidOn: string }) {
       u.recorded({ title: `${early ? "Paid early" : "Auto-paid"} ${label}`, kind: "add" }, async (rec) => {
         // Undoing an early payment frees the date again, so it's paid on the day as usual.
         if (early) rec(u.removed("autopayRuns", [run.id]));
-        const [acc] = a.accountId ? await db().select().from(accounts).where(eq(accounts.id, a.accountId)) : [];
+        const fromId = early && early.accountId !== undefined ? early.accountId : a.accountId;
+        const [acc] = fromId ? await db().select().from(accounts).where(eq(accounts.id, fromId)) : [];
         if (a.kind === "sip" && a.savingId) {
           const { addEntry } = await import("./savings");
           const e = await addEntry(a.savingId, { type: "deposit", amount: a.amountPaise / 100, date: on, note: `${early ? "Paid early · " : ""}SIP · ${fmtLocal(new Date(`${dueDate}T12:00:00Z`), a.frequency === "monthly" ? "MMM yyyy" : a.frequency === "yearly" ? "yyyy" : "d MMM")}`, accountId: acc && acc.kind !== "card" ? acc.id : null });
@@ -257,7 +259,7 @@ async function pay(a: Autopay, dueDate: string, early?: { paidOn: string }) {
               category: "EMI/Loans",
               note: `${a.name} EMI${a.totalCount ? ` ${n}/${a.totalCount}` : ""}${early ? ` (paid early, due ${fmtLocal(new Date(`${dueDate}T12:00:00Z`), "d MMM")})` : ""}`,
               merchant: a.lender || null,
-              method: acc?.kind === "card" ? "card" : acc?.kind === "cash" ? "cash" : "bank",
+              method: acc?.kind === "card" ? "card" : acc?.kind === "cash" ? "cash" : acc ? "bank" : null,
               date: on,
               accountId: acc?.id ?? null,
             },
@@ -280,7 +282,7 @@ async function pay(a: Autopay, dueDate: string, early?: { paidOn: string }) {
  * "Paid early": record the next unpaid payment now (or on the day you say). That due date is
  * then done, so the automatic payment skips it, and no low-balance reminder comes for it.
  */
-export async function payEarly(id: string, paidOn?: string | null, now = new Date()) {
+export async function payEarly(id: string, paidOn?: string | null, now = new Date(), accountId?: string | null) {
   const [a] = await db().select().from(autopays).where(eq(autopays.id, id));
   if (!a) throw new Error("Not found");
   const today = localToday(now);
@@ -289,7 +291,7 @@ export async function payEarly(id: string, paidOn?: string | null, now = new Dat
   if (!a.active || !due) throw new Error(a.kind === "emi" && item?.remainingCount === 0 ? "All EMIs are already paid" : "Nothing left to pay (it's paused or finished)");
   const on = paidOn && paidOn <= today ? paidOn : today;
   if (a.alertFor === due) await clearAlert(a);
-  const r = await pay(a, due, { paidOn: on });
+  const r = await pay(a, due, { paidOn: on, accountId });
   if (!r) throw new Error("That payment is already recorded");
   return { ...r, dueDate: due };
 }
