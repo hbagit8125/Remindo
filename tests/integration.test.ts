@@ -1293,6 +1293,55 @@ async function main() {
     }
   }
 
+  // ---------------------------------------------------------------- Paid early + unlink
+  {
+    const AP2 = await import("../src/lib/autopay");
+    const U4 = await import("../src/lib/undo");
+    const { localToUtc } = await import("../src/lib/time");
+    const { autopays: apT2, autopayRuns: runT2, transactions: txT } = await import("../src/db");
+    const MP7 = await import("../src/lib/moneyplus");
+    const bank2 = (await MP7.listAccounts()).find((a) => a.name === "QA Autopay Bank")!;
+    const d5 = local(60 * 24 * 5).date;
+    const emi = await AP2.createAutopay({ kind: "emi", name: "QA Early EMI", amount: 1000, frequency: "monthly", day: Number(d5.slice(8)), accountId: bank2.id, totalCount: 3, paidBefore: 0, active: true });
+    const before = (await AP2.listAutopays()).find((x) => x.id === emi.id)!;
+    assert.equal(before.nextDate, d5);
+    // Pay the EMI due in 5 days today.
+    const { value: early, undoId } = await U4.track(() => AP2.payEarly(emi.id));
+    assert.equal(early.dueDate, d5);
+    const [tx] = await db().select().from(txT).where(and(eq(txT.accountId, bank2.id), eq(txT.category, "EMI/Loans")));
+    assert.equal(tx.date, local(0).date, "recorded today");
+    assert.match(tx.note!, /EMI 1\/3 \(paid early, due/);
+    const after = (await AP2.listAutopays()).find((x) => x.id === emi.id)!;
+    assert.equal(after.paidCount, 1);
+    assert.ok(after.nextDate! > d5, "next one moves to the month after");
+    // On the due date nothing more is taken.
+    await AP2.runAutopays(localToUtc(d5, "09:00"));
+    assert.equal((await db().select().from(runT2).where(eq(runT2.autopayId, emi.id))).length, 1, "no second payment on the due date");
+    // Undo frees the date again → paid on the day as usual.
+    await U4.undoActivity(undoId!);
+    assert.equal((await db().select().from(runT2).where(eq(runT2.autopayId, emi.id))).length, 0);
+    assert.equal((await AP2.listAutopays()).find((x) => x.id === emi.id)!.nextDate, d5);
+    await AP2.runAutopays(localToUtc(d5, "09:00"));
+    assert.equal((await db().select().from(runT2).where(eq(runT2.autopayId, emi.id))).length, 1, "paid on the day after undo");
+    // Paying the last ones early finishes the EMI; undo turns it back on.
+    await AP2.payEarly(emi.id);
+    const { undoId: lastUndo } = await U4.track(() => AP2.payEarly(emi.id));
+    assert.equal((await db().select().from(apT2).where(eq(apT2.id, emi.id)))[0].active, false, "finished");
+    await assert.rejects(() => AP2.payEarly(emi.id), /already paid|Nothing left/);
+    await U4.undoActivity(lastUndo!);
+    assert.equal((await db().select().from(apT2).where(eq(apT2.id, emi.id)))[0].active, true, "back on after undo");
+
+    // Unlink: the money was already in the fund.
+    const SV4 = await import("../src/lib/savings");
+    const atom = await SV4.createSaving({ name: "QA Atom", kind: "mutual_fund" });
+    const bal0 = (await MP7.listAccounts()).find((a) => a.id === bank2.id)!.balancePaise;
+    const e = (await SV4.addEntry(atom.id, { type: "deposit", amount: 2309, date: local(0).date, accountId: bank2.id }))!;
+    assert.equal((await MP7.listAccounts()).find((a) => a.id === bank2.id)!.balancePaise, bal0 - 230900);
+    await SV4.unlinkEntry(e.id);
+    assert.equal((await MP7.listAccounts()).find((a) => a.id === bank2.id)!.balancePaise, bal0, "bank back");
+    assert.equal((await SV4.getSaving(atom.id))!.valuePaise, 230900, "fund keeps it");
+  }
+
   console.log(`\n✓ all checks passed (${sent.length} emails captured)`);
 }
 

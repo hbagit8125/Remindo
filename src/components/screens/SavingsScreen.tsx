@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { clsx } from "clsx";
-import { ArrowDownLeft, ArrowUpRight, Loader2, Pencil, PiggyBank, Plus, RefreshCw, Sparkles, Trash2, TrendingDown, TrendingUp } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Loader2, Pencil, PiggyBank, Plus, RefreshCw, Sparkles, Trash2, TrendingDown, TrendingUp, Unlink } from "lucide-react";
+import { useToast } from "@/components/app/toast";
 import { api, refreshAll, useData, useHidden } from "@/components/app/client";
 import { Empty, PageTitle, Section, SkeletonList, useUndoDelete } from "@/components/app/rows";
 import { MoneyTabs } from "@/components/app/MoneyTabs";
@@ -159,6 +160,7 @@ function SavingDetail({ id, onClose, onEdit }: { id: string; onClose: () => void
   const hidden = useHidden();
   const del = useUndoDelete();
   const [adding, setAdding] = useState<EntryKind | null>(null);
+  const { toast } = useToast();
   const s = data?.saving;
   const m = s ? meta(s.kind) : SAVING_KINDS.other;
   const market = s ? MARKET_KINDS.includes(s.kind) : false;
@@ -246,6 +248,22 @@ function SavingDetail({ id, onClose, onEdit }: { id: string; onClose: () => void
                       </p>
                     </div>
                     <span className={clsx("text-sm font-semibold tabular-nums", growth && (e.amountPaise >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500"))}>{signed(amount)}</span>
+                    {e.transactionId && (
+                      <button
+                        onClick={() =>
+                          api(`/api/saving-entries/${e.id}`, { method: "PATCH", json: { unlink: true } }).then(() => {
+                            refreshAll();
+                            reload();
+                            toast({ message: "Unlinked: the bank balance is back as it was" });
+                          })
+                        }
+                        className="p-1 text-subtle hover:text-indigo-500"
+                        aria-label="Not from my bank"
+                        title="Not from my bank (unlink)"
+                      >
+                        <Unlink className="h-4 w-4" />
+                      </button>
+                    )}
                     <button
                       onClick={() => del(e.id, "Entry removed", `/api/saving-entries/${e.id}`, reload)}
                       className="p-1 text-subtle hover:text-rose-500"
@@ -352,6 +370,15 @@ function EntryForm({ saving, kind, onClose }: { saving: Saving; kind: EntryKind;
             </div>
           )}
         </div>
+        {kind === "deposit" && accountId && n > 0 && (() => {
+          const a = accounts.find((x) => x.id === accountId);
+          const after = a ? a.balancePaise - Math.round(n * 100) : 0;
+          return a && after < 0 ? (
+            <p className="-mt-2 rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              ⚠️ {a.name} has {formatINR(a.balancePaise)}: this takes it to {formatINR(after)}. If the money was already in {saving.name} (you&apos;re just recording it), pick <b>Don&apos;t link</b>.
+            </p>
+          ) : null;
+        })()}
         {(kind === "deposit" || kind === "withdraw") && accounts.length > 0 && (
           <div>
             <label className={label}>Note</label>

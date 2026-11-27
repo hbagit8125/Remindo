@@ -352,3 +352,21 @@ export function nextInterest(s: Pick<Saving, "interestFreq" | "interestFrom" | "
   if (!next) return null;
   return { date: next.date, paise: Math.round((valuePaise * Number(s.ratePct) * next.years) / 100) };
 }
+
+/**
+ * "Not from my bank": keep the entry but drop the bank transfer it made
+ * (e.g. the money was already in the fund, you were only recording it).
+ */
+export async function unlinkEntry(id: string) {
+  const u = await import("./undo");
+  const [e] = await db().select().from(savingEntries).where(eq(savingEntries.id, id));
+  if (!e?.transactionId) return e ?? null;
+  const [s] = await db().select().from(savings).where(eq(savings.id, e.savingId));
+  return u.recorded({ title: `Unlinked a ${s?.name || "savings"} entry from the bank`, kind: "edit" }, async (rec) => {
+    rec(await u.snap("savingEntries", [id]));
+    rec(await u.snap("transactions", [e.transactionId]));
+    await db().update(savingEntries).set({ transactionId: null }).where(eq(savingEntries.id, id));
+    await db().delete(transactions).where(eq(transactions.id, e.transactionId!));
+    return { ...e, transactionId: null };
+  });
+}
