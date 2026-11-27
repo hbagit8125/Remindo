@@ -13,6 +13,7 @@ import { ACCOUNT_META, type Account } from "@/components/types";
 import { formatINR } from "@/lib/money";
 import { MARKET_KINDS, SAVING_KINDS, type SavingKind } from "@/lib/savings-kinds";
 import { AutopayList } from "@/components/app/Autopay";
+import { HideAmountsButton } from "@/components/app/HideAmounts";
 
 type Totals = { inPaise: number; outPaise: number; growthPaise: number; valuePaise: number; investedPaise: number; returnPct: number | null };
 type Saving = Totals & {
@@ -78,7 +79,8 @@ export function SavingsScreen() {
         />
       ) : (
         <>
-          <div className="card mb-5 rounded-3xl bg-gradient-to-br from-emerald-500/15 via-teal-500/5 to-transparent p-5">
+          <div className="card relative mb-5 rounded-3xl bg-gradient-to-br from-emerald-500/15 via-teal-500/5 to-transparent p-5">
+            <HideAmountsButton className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-lg text-subtle hover:bg-raised hover:text-fg" />
             <p className="text-xs text-muted">Total savings</p>
             <p className="mt-1 text-3xl font-semibold tabular-nums">{formatINR(t?.valuePaise || 0)}</p>
             <div className="mt-3 grid grid-cols-3 gap-2 text-xs">

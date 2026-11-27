@@ -8,7 +8,7 @@ import { field, label } from "./ReminderEditor";
 import { useUndoDelete } from "./rows";
 import { Modal, ghostBtn, primaryBtn, useSubmit } from "@/components/screens/MoneyPlus";
 import { ACCOUNT_META, type Account } from "@/components/types";
-import { formatINR } from "@/lib/money";
+import { formatINR, HIDDEN_AMOUNT } from "@/lib/money";
 
 export type AutopayRow = {
   id: string;
@@ -55,7 +55,7 @@ function when(a: { frequency?: Frequency; day: number; month?: number | null }) 
 const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
 const short = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 const monthYear = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IN", { month: "short", year: "numeric" });
-const lakh = (p: number) => (p >= 1e7 ? `₹${(p / 1e7).toFixed(p % 1e7 ? 1 : 0)}L` : formatINR(p));
+const lakh = (p: number) => (p >= 1e7 && formatINR(p) !== HIDDEN_AMOUNT ? `₹${(p / 1e7).toFixed(p % 1e7 ? 1 : 0)}L` : formatINR(p));
 
 /** SIPs or EMIs, with "+ SIP / + EMI". */
 export function AutopayList({ kind, savingId }: { kind: "sip" | "emi"; savingId?: string }) {
