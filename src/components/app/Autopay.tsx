@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { clsx } from "clsx";
-import { AlertTriangle, Loader2, Plus } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Plus } from "lucide-react";
 import { api, useData, useHidden } from "./client";
 import { field, label } from "./ReminderEditor";
 import { useUndoDelete } from "./rows";
@@ -62,6 +62,7 @@ export function AutopayList({ kind, savingId }: { kind: "sip" | "emi"; savingId?
   const { data } = useData<{ autopays: AutopayRow[] }>("/api/autopays");
   const hidden = useHidden();
   const [editing, setEditing] = useState<Partial<AutopayRow> | null>(null);
+  const [paying, setPaying] = useState<AutopayRow | null>(null);
   const list = (data?.autopays || []).filter((a) => a.kind === kind && !hidden.has(a.id) && (!savingId || a.savingId === savingId));
   const title = kind === "sip" ? "SIPs & auto-deposits" : "Loans & EMIs";
   return (
@@ -84,20 +85,27 @@ export function AutopayList({ kind, savingId }: { kind: "sip" | "emi"; savingId?
       ) : (
         <div className="grid grid-cols-[minmax(0,1fr)] gap-2">
           {list.map((a) => (
-            <AutopayCard key={a.id} a={a} onOpen={() => setEditing(a)} />
+            <AutopayCard key={a.id} a={a} onOpen={() => setEditing(a)} onPayEarly={() => setPaying(a)} />
           ))}
         </div>
       )}
-      {editing && <AutopayForm initial={editing} onClose={() => setEditing(null)} />}
+      {editing && <AutopayForm initial={editing} onClose={() => setEditing(null)} onPayEarly={(a) => (setEditing(null), setPaying(a))} />}
+      {paying && <PayEarly a={paying} onClose={() => setPaying(null)} />}
     </section>
   );
 }
 
-function AutopayCard({ a, onOpen }: { a: AutopayRow; onOpen: () => void }) {
+function AutopayCard({ a, onOpen, onPayEarly }: { a: AutopayRow; onOpen: () => void; onPayEarly: () => void }) {
   const done = a.kind === "emi" && a.remainingCount === 0;
   const pct = a.kind === "emi" && a.totalCount ? Math.round((a.paidCount / a.totalCount) * 100) : null;
   return (
-    <button onClick={onOpen} className={clsx("card w-full rounded-2xl px-3.5 py-3 text-left hover:bg-raised", !a.active && !done && "opacity-60")}>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => e.key === "Enter" && onOpen()}
+      className={clsx("card w-full cursor-pointer rounded-2xl px-3.5 py-3 text-left hover:bg-raised", !a.active && !done && "opacity-60")}
+    >
       <div className="flex items-center gap-3">
         <span className={clsx("grid h-10 w-10 shrink-0 place-items-center rounded-xl text-lg", a.kind === "sip" ? "bg-emerald-500/15" : "bg-sky-500/15")}>{a.kind === "sip" ? "🔁" : "🏠"}</span>
         <span className="min-w-0 flex-1">
@@ -130,11 +138,24 @@ function AutopayCard({ a, onOpen }: { a: AutopayRow; onOpen: () => void }) {
           <AlertTriangle className="h-3.5 w-3.5" /> {a.accountName} is {formatINR(a.short)} short for the next one
         </p>
       )}
-    </button>
+      {a.active && a.nextDate && (
+        <div className="mt-2 flex justify-end">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onPayEarly();
+            }}
+            className="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1 text-xs font-medium hover:bg-raised"
+          >
+            <Check className="h-3.5 w-3.5" /> Paid early
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
-export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>; onClose: () => void }) {
+export function AutopayForm({ initial, onClose, onPayEarly }: { initial: Partial<AutopayRow>; onClose: () => void; onPayEarly?: (a: AutopayRow) => void }) {
   const { busy, run } = useSubmit();
   const del = useUndoDelete();
   const kind = initial.kind || "sip";
@@ -309,6 +330,11 @@ export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>
           {sip ? " and added to the saving (a transfer, not spending)" : " as an EMI/Loans expense"}. If {acc?.name || "it"} looks short the day before, you get a reminder at 7 pm.
           {!sip && Number(total) ? ` It stops after EMI ${total}.` : ""} Telegram shows each payment with an Undo button.
         </p>
+        {edit && initial.active && initial.nextDate && onPayEarly && (
+          <button onClick={() => onPayEarly(initial as AutopayRow)} className={clsx(ghostBtn, "flex items-center justify-center gap-1.5")}>
+            <Check className="h-4 w-4" /> Paid early: mark the {short(initial.nextDate)} payment as done
+          </button>
+        )}
         <div className="flex gap-2">
           {edit && (
             <button
@@ -336,6 +362,40 @@ export function AutopayForm({ initial, onClose }: { initial: Partial<AutopayRow>
             {busy && <Loader2 className="h-4 w-4 animate-spin" />} Save
           </button>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** "Paid early": records the next payment now (or on the day you paid); the automatic one skips it. */
+function PayEarly({ a, onClose }: { a: AutopayRow; onClose: () => void }) {
+  const { busy, run } = useSubmit();
+  const today = new Date().toLocaleDateString("en-CA");
+  const [paidOn, setPaidOn] = useState(today);
+  const emiNo = a.kind === "emi" ? Math.min(a.paidCount + 1, a.totalCount ?? a.paidCount + 1) : null;
+  return (
+    <Modal title={`Paid early · ${a.name}`} onClose={onClose}>
+      <div className="grid gap-4">
+        <div className="card rounded-2xl p-4">
+          <p className="text-xs text-muted">{a.kind === "emi" ? `EMI ${emiNo}${a.totalCount ? ` of ${a.totalCount}` : ""}` : "Next payment"}, due {a.nextDate ? short(a.nextDate) : ""}</p>
+          <p className="text-2xl font-semibold tabular-nums">{formatINR(a.amountPaise)}</p>
+          <p className="text-xs text-muted">{a.accountName ? `from ${a.accountName}` : ""}</p>
+        </div>
+        <div>
+          <label className={label}>Paid on</label>
+          <input className={field} type="date" value={paidOn} max={today} onChange={(e) => setPaidOn(e.target.value)} />
+        </div>
+        <p className="text-xs text-muted">
+          It&apos;s recorded now{a.kind === "sip" ? " and added to the saving" : " as an EMI/Loans expense"}. On {a.nextDate ? short(a.nextDate) : "the due date"} nothing more is taken and there&apos;s no low-balance reminder for it. The next one after that stays as usual.
+        </p>
+        <button
+          data-submit
+          className={primaryBtn}
+          disabled={busy}
+          onClick={() => run(() => api(`/api/autopays/${a.id}/pay`, { method: "POST", json: { paidOn } }), a.kind === "emi" ? `EMI ${emiNo} marked paid ✓` : "Marked paid ✓", onClose)}
+        >
+          {busy && <Loader2 className="h-4 w-4 animate-spin" />} Mark as paid
+        </button>
       </div>
     </Modal>
   );
